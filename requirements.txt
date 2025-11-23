@@ -2,3 +2,6 @@
 PySide6==6.9.3          # Qt界面框架（包含QVideoWidget等）
 opencv-python==4.12.0.88 # OpenCV（视频帧处理）
 requests==2.32.5        # HTTP请求（Digest认证API依赖）
+# ✅ 新增：OpenGL支持
+PyOpenGL>=3.1.6
+PyOpenGL-accelerate>=3.1.6  # 可选：加速模块
