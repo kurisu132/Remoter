@@ -17,28 +17,26 @@
    <item>
     <widget class="QOpenGLWidget" name="openGLWidget"/>
    </item>
-   <item>
-    <layout class="QVBoxLayout" name="verticalLayout_4">
-     <item>
-      <widget class="QLabel" name="video_label">
-       <property name="minimumSize">
-        <size>
-         <width>640</width>
-         <height>480</height>
-        </size>
-       </property>
-       <property name="styleSheet">
-        <string notr="true">border: 2px solid black;  /* 2像素宽，红色实线边框 */
+<item>
+ <layout class="QVBoxLayout" name="verticalLayout_4">
+  <item>
+   <widget class="VideoOpenGLWidget" name="video_widget">
+    <property name="minimumSize">
+     <size>
+      <width>640</width>
+      <height>480</height>
+     </size>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">border: 2px solid black;  /* 2像素宽，红色实线边框 */
 border-radius: 10px;     /* 可选：圆角边框 */
 padding: 3px;           /* 可选：内边距 */</string>
-       </property>
-       <property name="text">
-        <string/>
-       </property>
-      </widget>
-     </item>
-    </layout>
-   </item>
+    </property>
+   </widget>
+  </item>
+ </layout>
+</item>
+
    <item>
     <layout class="QVBoxLayout" name="verticalLayout_3" stretch="0,0,1,2,1,1,3">
      <item>
@@ -406,6 +404,13 @@ padding: 3px;           /* 可选：内边距 */
    </item>
   </layout>
  </widget>
+ <customwidgets>
+  <customwidget>
+   <class>VideoOpenGLWidget</class>
+   <extends>QOpenGLWidget</extends>
+   <header>gui.video_opengl_widget</header>
+  </customwidget>
+ </customwidgets>
  <resources/>
  <connections/>
 </ui>
