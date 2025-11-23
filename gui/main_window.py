@@ -5,6 +5,9 @@ from PySide6.QtUiTools import QUiLoader
 from PySide6.QtCore import QFile, QIODevice, Qt, QThread, Signal
 from PySide6.QtGui import QPixmap, QFont
 
+# ✅ 新增：导入OpenGL控件
+from gui.video_opengl_widget import VideoOpenGLWidget
+
 from api.digest_auth import digest_auth_request
 from api.light_control import LightControlClient
 from api.ptz_control import PTZControlClient
@@ -68,6 +71,10 @@ class LightWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self, ui_file_path="../ui/window.ui"):
         super().__init__()
+
+        # ✅ 新增：视频渲染模式配置
+        self.USE_OPENGL = True  # True=OpenGL渲染, False=QLabel渲染（降级方案）
+
         self.ui = self._load_ui(ui_file_path)
 
         self.rtsp_player = None
@@ -108,13 +115,48 @@ class MainWindow(QMainWindow):
 
     # ---------------- 控件初始化 ----------------
     def _init_ui_elements(self):
-        self.video_label = self.ui.findChild(QLabel, "video_label")
-        if not self.video_label:
-            QMessageBox.critical(self, "控件缺失", "未找到 video_label")
-            sys.exit(1)
-        self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setText("视频加载中...")
+        """初始化UI控件"""
+        # ✅ 修改：根据配置选择渲染方式
+        if self.USE_OPENGL:
+            logger.info("使用OpenGL硬件加速渲染")
 
+            # 创建OpenGL控件
+            self.video_widget = VideoOpenGLWidget(self.ui)
+            self.video_widget.setMinimumSize(640, 480)
+
+            # 替换UI中的video_label占位符
+            video_label_placeholder = self.ui.findChild(QLabel, "video_label")
+            if video_label_placeholder:
+                # 获取布局
+                layout = video_label_placeholder.parent().layout()
+                if layout:
+                    # 移除旧的QLabel
+                    layout.removeWidget(video_label_placeholder)
+                    video_label_placeholder.deleteLater()
+                    # 添加新的OpenGL控件
+                    layout.addWidget(self.video_widget)
+                else:
+                    logger.error("未找到video_label的父布局")
+            else:
+                logger.error("未找到video_label占位符")
+
+            # 用于兼容现有代码
+            self.video_label = self.video_widget
+        else:
+            logger.info("使用QLabel软件渲染（降级模式）")
+
+            # 保持原有逻辑
+            self.video_label = self.ui.findChild(QLabel, "video_label")
+            if not self.video_label:
+                QMessageBox.critical(self, "控件缺失", "未找到 video_label")
+                sys.exit(1)
+            self.video_label.setAlignment(Qt.AlignCenter)
+            self.video_label.setText("视频加载中...")
+
+            # 兼容属性
+            self.video_widget = self.video_label
+
+        # 认证按钮初始化（保持不变）
         self.autho_button = self.ui.findChild(QPushButton, "autho")
         if not self.autho_button:
             QMessageBox.critical(self, "控件缺失", "未找到认证按钮 autho")
@@ -124,7 +166,7 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(self.ui)
         self.resize(1280, 800)
-        self.setWindowTitle("RTSP 视频监控终端")
+        self.setWindowTitle("RTSP 视频监控终端 - OpenGL加速")
 
     # ---------------- 灯控 ----------------
     def _init_light_control_ui(self):
@@ -172,16 +214,22 @@ class MainWindow(QMainWindow):
         logger.info(f"RTSP启动: {rtsp_url}")
 
     def _update_video_frame(self, q_image):
-        pix = QPixmap.fromImage(
-            q_image.scaled(
-                self.video_label.width(),
-                self.video_label.height(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
+        """更新视频帧显示"""
+        if self.USE_OPENGL:
+            # ✅ 新增：OpenGL直接渲染
+            self.video_widget.update_frame(q_image)
+        else:
+            # 保持原有QLabel逻辑
+            pix = QPixmap.fromImage(
+                q_image.scaled(
+                    self.video_label.width(),
+                    self.video_label.height(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
             )
-        )
-        self.video_label.setPixmap(pix)
-        self.video_label.setText("")
+            self.video_label.setPixmap(pix)
+            self.video_label.setText("")
 
     # ---------------- 认证 ----------------
     def _handle_autho_click(self):
@@ -284,6 +332,11 @@ class MainWindow(QMainWindow):
         self.rtsp_player = None
         self.auth_thread = None
         self.light_thread = None
+
+        # ✅ 新增：清理OpenGL资源
+        if self.USE_OPENGL and hasattr(self.video_widget, 'cleanup'):
+            self.video_widget.cleanup()
+            logger.info("OpenGL资源已清理")
 
         event.accept()
 
