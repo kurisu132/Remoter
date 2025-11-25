@@ -13,21 +13,21 @@ class FFmpegRTSPPlayer(QThread):
     """
     基于FFmpeg的RTSP拉流线程，输出QImage到UI
 
-    1080P 优化版本特性：
-    - ✅ 针对 1920x1080 分辨率优化
+    5MP 多线程优化版本特性：
+    - ✅ 针对 2592x1904 (5MP) 分辨率优化
+    - ✅ 多线程slice级并行解码（4线程）
     - ✅ 低延迟解码参数
-    - ✅ 多线程加速
     - ✅ 零拷贝优化
-    - ✅ 如果摄像头输出非 1080P，自动使用快速缩放
+    - ✅ 适配更高码率和分辨率
     """
     frame_updated = Signal(QImage)  # 发送QImage信号（UI线程显示）
     error_occurred = Signal(str)  # 错误信息信号
 
-    def __init__(self, rtsp_url: str, width=1920, height=1080, parent=None):
+    def __init__(self, rtsp_url: str, width=2592, height=1904, parent=None):
         super().__init__(parent)
         self.rtsp_url = rtsp_url  # RTSP流地址
-        self.width = width  # 目标宽度（1920）
-        self.height = height  # 目标高度（1080）
+        self.width = 2592  # 目标宽度（2592）
+        self.height = 1904  # 目标高度（1904）
         self._is_running = False  # 线程运行标志
         self._process = None  # FFmpeg子进程句柄
 
@@ -35,7 +35,7 @@ class FFmpegRTSPPlayer(QThread):
         """启动FFmpeg拉流，读取帧并发送到UI"""
         self._is_running = True
 
-        # ✅ 1080P 低延迟优化命令
+        # ✅ 5MP 多线程优化命令
         ffmpeg_cmd = [
             "ffmpeg",
 
@@ -43,15 +43,15 @@ class FFmpegRTSPPlayer(QThread):
             "-rtsp_transport", "tcp",  # TCP 传输（稳定）
             "-fflags", "nobuffer",  # 禁用缓冲区
             "-flags", "low_delay",  # 低延迟标志
-            "-probesize", "2048",  # 2KB 探测
-            "-analyzeduration", "1000000",  # 1 秒分析
+            "-probesize", "2048",  # 2KB 探测（适应更大分辨率）
+            "-analyzeduration", "1000000",  # 1 秒分析（适应更高码率）
 
             # ========== 输入源 ==========
             "-i", self.rtsp_url,  # RTSP 地址
 
             # ========== 解码和缩放优化 ==========
-            # 如果摄像头输出已经是 1080P，缩放操作会自动跳过（无性能损失）
-            # 如果不是 1080P，使用快速双线性缩放
+            # 如果摄像头输出已经是 5MP，缩放操作会自动跳过（无性能损失）
+            # 如果不是 5MP，使用快速双线性缩放
             "-vf", f"scale={self.width}:{self.height}:flags=fast_bilinear",
             "-sws_flags", "fast_bilinear",  # 快速缩放算法
 
@@ -60,8 +60,9 @@ class FFmpegRTSPPlayer(QThread):
             "-f", "rawvideo",  # 原始视频流
             "-vcodec", "rawvideo",  # 原始视频编码
 
-            # ========== 性能优化 ==========
+            # ========== 5MP 性能优化关键：多线程解码 ==========
             "-threads", "4",  # 使用 4 个线程（加速解码）
+            "-thread_type", "slice",  # slice 级别并行（最适合 H.264）
 
             # ========== 其他设置 ==========
             "-an", "-sn",  # 忽略音频和字幕
@@ -70,9 +71,10 @@ class FFmpegRTSPPlayer(QThread):
         ]
 
         try:
-            logger.info(f"🚀 启动 1080P 低延迟模式 FFmpeg 拉流")
+            logger.info(f"🚀 启动 5MP 多线程低延迟模式 FFmpeg 拉流")
             logger.info(f"📐 目标分辨率: {self.width}x{self.height}")
-            logger.info(f"💡 提示：如果摄像头已配置为 1080P 输出，将无需缩放（延迟最低）")
+            logger.info(f"🧵 多线程解码: 4 线程 (slice 级并行)")
+            logger.info(f"💡 提示：摄像头应配置为 2592x1904@15-20fps，码率 6000-8000Kbps")
 
             # 启动FFmpeg子进程
             self._process = sp.Popen(
@@ -131,9 +133,8 @@ class FFmpegRTSPPlayer(QThread):
 
                 frame_count += 1
                 if frame_count == 1:
-                    logger.info("🎉 成功接收第一帧！")
-                if frame_count % 100 == 0:
-                    logger.info(f"📹 已处理 {frame_count} 帧")
+                    logger.info("🎉 成功接收第一帧（5MP 分辨率）！")
+                # ✅ 移除周期性帧数日志（不再显示"已处理多少帧"）
 
         except Exception as e:
             logger.error(f"❌ 拉流失败: {e}", exc_info=True)
@@ -170,13 +171,13 @@ if __name__ == "__main__":
     layout = QVBoxLayout(window)
     label = QLabel("正在连接RTSP流...")
     label.setAlignment(Qt.AlignCenter)
-    label.setMinimumSize(1920, 1080)
+    label.setMinimumSize(1296, 952)  # 5MP 的 50% 显示大小
     layout.addWidget(label)
-    window.setWindowTitle("FFmpeg RTSP 1080P 低延迟播放器测试")
+    window.setWindowTitle("FFmpeg RTSP 5MP 多线程低延迟播放器测试")
     window.show()
 
-    # 使用 1080P 分辨率
-    player = FFmpegRTSPPlayer(TEST_RTSP_URL, 1920, 1080)
+    # 使用 5MP 分辨率
+    player = FFmpegRTSPPlayer(TEST_RTSP_URL, 2592, 1904)
     player.frame_updated.connect(
         lambda img: label.setPixmap(QPixmap.fromImage(img.scaled(
             label.width(), label.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation

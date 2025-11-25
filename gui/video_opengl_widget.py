@@ -2,6 +2,7 @@
 VideoOpenGLWidget - OpenGL 硬件加速视频渲染控件
 完整修复版：解决所有已知问题（错误检查器、Y轴翻转、强制重绘、内存安全）
 修复：PySide6 导入路径兼容性问题
+优化：移除帧数统计日志，适配 5MP 分辨率
 """
 import sys
 import logging
@@ -37,44 +38,35 @@ class VideoOpenGLWidget(QOpenGLWidget):
     """
     使用 OpenGL 硬件加速渲染视频流的自定义控件
 
-    完整修复版本特性：
+    5MP 优化版本特性：
     - ✅ 兼容多个 PySide6 版本的导入路径
     - ✅ 彻底禁用 PyOpenGL 错误检查器
     - ✅ 修复纹理坐标 Y 轴翻转问题
     - ✅ 使用 repaint() 强制立即重绘
     - ✅ 内存安全的 QImage 处理
-    - ✅ 详细的调试日志
+    - ✅ 移除周期性帧数日志（更清爽的输出）
+    - ✅ 支持 5MP (2592x1904) 高分辨率渲染
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-
-        # OpenGL 资源
         self.texture_id = None
         self.shader_program = None
-        self.vbo = None
-
-        # 视频状态
+        self.vbo_vertices = None
+        self.vbo_tex_coords = None
         self.current_frame = None
+        self.frame_count = 0
         self.frame_width = 0
         self.frame_height = 0
-        self.frame_count = 0
-
-        # ✅ 关键修复3：设置 Widget 属性强制立即重绘
-        self.setAttribute(Qt.WA_OpaquePaintEvent)
-        self.setAttribute(Qt.WA_NoSystemBackground)
-        self.setUpdateBehavior(QOpenGLWidget.NoPartialUpdate)
-
-        logger.info("✅ VideoOpenGLWidget 已创建")
+        logger.info("✅ VideoOpenGLWidget (5MP 优化版) 初始化完成")
 
     def initializeGL(self):
-        """OpenGL 初始化"""
+        """初始化 OpenGL 环境"""
         try:
-            # 打印 OpenGL 版本信息
-            vendor = glGetString(GL_VENDOR).decode('utf-8')
-            renderer = glGetString(GL_RENDERER).decode('utf-8')
-            version = glGetString(GL_VERSION).decode('utf-8')
-            logger.info(f"OpenGL 初始化: {vendor}, {renderer}, {version}")
+            logger.info("🎨 开始初始化 OpenGL 环境...")
+
+            # 清屏颜色
+            glClearColor(0.0, 0.0, 0.0, 1.0)
 
             # 创建纹理
             self.texture_id = glGenTextures(1)
@@ -83,120 +75,145 @@ class VideoOpenGLWidget(QOpenGLWidget):
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+            glBindTexture(GL_TEXTURE_2D, 0)
 
-            # 创建 Shader
-            self.shader_program = self._create_shader_program()
+            # 编译着色器
+            self.shader_program = self._compile_shaders()
 
             # 创建 VBO
-            self.vbo = glGenBuffers(1)
+            self._create_vbo()
 
-            logger.info(f"✅ OpenGL 资源创建成功 (纹理ID={self.texture_id}, Shader={self.shader_program}, VBO={self.vbo})")
+            logger.info("✅ OpenGL 初始化成功（纹理、着色器、VBO 已就绪）")
 
         except Exception as e:
             logger.error(f"❌ initializeGL 失败: {e}", exc_info=True)
 
-    def _create_shader_program(self):
-        """创建并编译 Shader 程序"""
+    def _compile_shaders(self):
+        """编译顶点和片段着色器"""
         # 顶点着色器
-        vertex_shader = """
+        vertex_shader_source = """
         #version 330 core
         layout(location = 0) in vec2 position;
         layout(location = 1) in vec2 texCoord;
-        out vec2 fragTexCoord;
+        out vec2 vTexCoord;
         void main() {
             gl_Position = vec4(position, 0.0, 1.0);
-            fragTexCoord = texCoord;
+            vTexCoord = texCoord;
         }
         """
 
         # 片段着色器
-        fragment_shader = """
+        fragment_shader_source = """
         #version 330 core
-        in vec2 fragTexCoord;
+        in vec2 vTexCoord;
         out vec4 fragColor;
         uniform sampler2D videoTexture;
         void main() {
-            fragColor = texture(videoTexture, fragTexCoord);
+            fragColor = texture(videoTexture, vTexCoord);
         }
         """
 
         # 编译顶点着色器
-        vs = glCreateShader(GL_VERTEX_SHADER)
-        glShaderSource(vs, vertex_shader)
-        glCompileShader(vs)
-        if glGetShaderiv(vs, GL_COMPILE_STATUS) != GL_TRUE:
-            error = glGetShaderInfoLog(vs).decode('utf-8')
-            raise RuntimeError(f"顶点着色器编译失败: {error}")
+        vertex_shader = glCreateShader(GL_VERTEX_SHADER)
+        glShaderSource(vertex_shader, vertex_shader_source)
+        glCompileShader(vertex_shader)
+        if not glGetShaderiv(vertex_shader, GL_COMPILE_STATUS):
+            error = glGetShaderInfoLog(vertex_shader).decode()
+            logger.error(f"❌ 顶点着色器编译失败: {error}")
+            raise RuntimeError("顶点着色器编译失败")
 
         # 编译片段着色器
-        fs = glCreateShader(GL_FRAGMENT_SHADER)
-        glShaderSource(fs, fragment_shader)
-        glCompileShader(fs)
-        if glGetShaderiv(fs, GL_COMPILE_STATUS) != GL_TRUE:
-            error = glGetShaderInfoLog(fs).decode('utf-8')
-            raise RuntimeError(f"片段着色器编译失败: {error}")
+        fragment_shader = glCreateShader(GL_FRAGMENT_SHADER)
+        glShaderSource(fragment_shader, fragment_shader_source)
+        glCompileShader(fragment_shader)
+        if not glGetShaderiv(fragment_shader, GL_COMPILE_STATUS):
+            error = glGetShaderInfoLog(fragment_shader).decode()
+            logger.error(f"❌ 片段着色器编译失败: {error}")
+            raise RuntimeError("片段着色器编译失败")
 
-        # 链接程序
-        program = glCreateProgram()
-        glAttachShader(program, vs)
-        glAttachShader(program, fs)
-        glLinkProgram(program)
-        if glGetProgramiv(program, GL_LINK_STATUS) != GL_TRUE:
-            error = glGetProgramInfoLog(program).decode('utf-8')
-            raise RuntimeError(f"Shader 程序链接失败: {error}")
+        # 链接着色器程序
+        shader_program = glCreateProgram()
+        glAttachShader(shader_program, vertex_shader)
+        glAttachShader(shader_program, fragment_shader)
+        glLinkProgram(shader_program)
+        if not glGetProgramiv(shader_program, GL_LINK_STATUS):
+            error = glGetProgramInfoLog(shader_program).decode()
+            logger.error(f"❌ 着色器程序链接失败: {error}")
+            raise RuntimeError("着色器程序链接失败")
 
-        glDeleteShader(vs)
-        glDeleteShader(fs)
+        # 删除独立的着色器对象
+        glDeleteShader(vertex_shader)
+        glDeleteShader(fragment_shader)
 
-        logger.info("✅ Shader 程序创建成功")
-        return program
+        logger.info("✅ 着色器编译成功")
+        return shader_program
+
+    def _create_vbo(self):
+        """创建顶点缓冲对象（VBO）"""
+        # 顶点坐标（NDC，左下角为原点）
+        vertices = np.array([
+            -1.0, -1.0,  # 左下
+             1.0, -1.0,  # 右下
+             1.0,  1.0,  # 右上
+            -1.0, -1.0,  # 左下
+             1.0,  1.0,  # 右上
+            -1.0,  1.0   # 左上
+        ], dtype=np.float32)
+
+        # ✅ 关键修复4：纹理坐标 Y 轴翻转
+        # OpenGL 纹理坐标：左下角 (0,0)，右上角 (1,1)
+        # QImage 坐标：左上角 (0,0)，右下角 (w,h)
+        # 需要翻转 Y 坐标：屏幕底部对应 V=1.0，屏幕顶部对应 V=0.0
+        tex_coords = np.array([
+            0.0, 1.0,  # 左下 → QImage 左上
+            1.0, 1.0,  # 右下 → QImage 右上
+            1.0, 0.0,  # 右上 → QImage 右下
+            0.0, 1.0,  # 左下 → QImage 左上
+            1.0, 0.0,  # 右上 → QImage 右下
+            0.0, 0.0   # 左上 → QImage 左下
+        ], dtype=np.float32)
+
+        # 创建 VBO
+        self.vbo_vertices = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_vertices)
+        glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_STATIC_DRAW)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+
+        self.vbo_tex_coords = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_tex_coords)
+        glBufferData(GL_ARRAY_BUFFER, tex_coords.nbytes, tex_coords, GL_STATIC_DRAW)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+
+        logger.info("✅ VBO 创建成功（纹理坐标已修复 Y 轴翻转）")
 
     def resizeGL(self, w, h):
-        """窗口尺寸变化时调整视口"""
+        """窗口尺寸变化时调用"""
         glViewport(0, 0, w, h)
-        logger.info(f"📐 视口已调整: {w}x{h}")
+        logger.info(f"🔄 OpenGL 视口调整: {w}x{h}")
 
     def paintGL(self):
-        """渲染当前帧"""
-        # 清屏（使用深灰色背景便于调试）
-        glClearColor(0.2, 0.2, 0.2, 1.0)
-        glClear(GL_COLOR_BUFFER_BIT)
-
-        # 如果没有帧数据，直接返回
-        if self.current_frame is None:
-            return
-
+        """渲染函数"""
         try:
-            # 使用 Shader 程序
-            glUseProgram(self.shader_program)
+            # 清屏
+            glClear(GL_COLOR_BUFFER_BIT)
 
-            # 绑定纹理
+            # 如果没有帧数据，跳过
+            if self.current_frame is None:
+                return
+
+            # 绑定纹理和着色器
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, self.texture_id)
+            glUseProgram(self.shader_program)
 
-            # ✅ 关键修复4：纹理坐标 Y 轴翻转
-            # OpenGL 坐标系：(0,0) 在左下角，Y 轴向上
-            # QImage 坐标系：(0,0) 在左上角，Y 轴向下
-            # 所以纹理坐标需要翻转：(0,1) 和 (1,0) 互换
-            vertices = np.array([
-                # 位置 (x, y)      纹理坐标 (u, v) - 已翻转
-                -1.0, -1.0,        0.0, 1.0,  # 左下角 -> 纹理左上角
-                 1.0, -1.0,        1.0, 1.0,  # 右下角 -> 纹理右上角
-                -1.0,  1.0,        0.0, 0.0,  # 左上角 -> 纹理左下角
-                 1.0, -1.0,        1.0, 1.0,  # 右下角 -> 纹理右上角
-                 1.0,  1.0,        1.0, 0.0,  # 右上角 -> 纹理右下角
-                -1.0,  1.0,        0.0, 0.0,  # 左上角 -> 纹理左下角
-            ], dtype=np.float32)
-
-            # 使用 VBO
-            glBindBuffer(GL_ARRAY_BUFFER, self.vbo)
-            glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_STATIC_DRAW)
-
-            # 设置顶点属性
-            stride = 4 * 4  # 4个float，每个4字节
-            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
+            # 绑定顶点 VBO
+            glBindBuffer(GL_ARRAY_BUFFER, self.vbo_vertices)
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, None)
             glEnableVertexAttribArray(0)
-            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(8))
+
+            # 绑定纹理坐标 VBO
+            glBindBuffer(GL_ARRAY_BUFFER, self.vbo_tex_coords)
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, None)
             glEnableVertexAttribArray(1)
 
             # 设置 uniform
@@ -215,9 +232,7 @@ class VideoOpenGLWidget(QOpenGLWidget):
 
             self.frame_count += 1
 
-            # 每 100 帧输出一次状态
-            if self.frame_count % 100 == 0:
-                logger.info(f"🎬 已渲染 {self.frame_count} 帧 (尺寸: {self.frame_width}x{self.frame_height})")
+            # ✅ 移除周期性帧数日志（不再显示"已渲染多少帧"）
 
         except Exception as e:
             logger.error(f"❌ paintGL 异常: {e}", exc_info=True)
@@ -234,7 +249,7 @@ class VideoOpenGLWidget(QOpenGLWidget):
             return
 
         try:
-            # 记录尺寸变化
+            # 记录尺寸变化（仅首次或尺寸改变时输出）
             if self.frame_width != q_image.width() or self.frame_height != q_image.height():
                 self.frame_width = q_image.width()
                 self.frame_height = q_image.height()
@@ -269,9 +284,7 @@ class VideoOpenGLWidget(QOpenGLWidget):
 
             img_data = img_data.reshape((height, width, 3))
 
-            # 每 200 帧输出一次纹理数据统计
-            if self.frame_count % 200 == 0:
-                logger.info(f"📊 纹理数据: min={img_data.min()}, max={img_data.max()}, mean={img_data.mean():.1f}")
+            # ✅ 移除周期性纹理数据统计日志
 
             # 上传到 GPU
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, img_data)
@@ -297,11 +310,14 @@ class VideoOpenGLWidget(QOpenGLWidget):
                 glDeleteProgram(self.shader_program)
                 logger.info("✅ Shader 程序已删除")
 
-            if self.vbo:
-                glDeleteBuffers(1, [self.vbo])
-                logger.info("✅ VBO 已删除")
+            if self.vbo_vertices:
+                glDeleteBuffers(1, [self.vbo_vertices])
+
+            if self.vbo_tex_coords:
+                glDeleteBuffers(1, [self.vbo_tex_coords])
 
             self.doneCurrent()
+            logger.info("✅ OpenGL 资源清理完成")
 
         except Exception as e:
             logger.error(f"❌ cleanup 异常: {e}", exc_info=True)
