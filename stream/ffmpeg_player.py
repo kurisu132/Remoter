@@ -1,5 +1,6 @@
 import logging
 import subprocess as sp
+import shutil
 import numpy as np
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtGui import QImage, QPixmap
@@ -13,7 +14,8 @@ class FFmpegRTSPPlayer(QThread):
     """
     基于FFmpeg的RTSP拉流线程，输出QImage到UI
 
-    5MP 多线程优化版本特性：
+    Ubuntu 专用 5MP 多线程优化版本特性：
+    - ✅ 自动检测 FFmpeg 路径（Ubuntu 系统路径）
     - ✅ 针对 2592x1904 (5MP) 分辨率优化
     - ✅ 多线程slice级并行解码（4线程）
     - ✅ 低延迟解码参数
@@ -31,13 +33,17 @@ class FFmpegRTSPPlayer(QThread):
         self._is_running = False  # 线程运行标志
         self._process = None  # FFmpeg子进程句柄
 
+        # ✅ Ubuntu：自动检测 FFmpeg 路径
+        self.ffmpeg_path = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+        logger.info(f"✅ FFmpeg 路径: {self.ffmpeg_path}")
+
     def run(self) -> None:
         """启动FFmpeg拉流，读取帧并发送到UI"""
         self._is_running = True
 
-        # ✅ 5MP 多线程优化命令
+        # ✅ 5MP 多线程优化命令（Ubuntu）
         ffmpeg_cmd = [
-            "ffmpeg",
+            self.ffmpeg_path,  # ✅ 使用检测到的 FFmpeg 路径
 
             # ========== 输入优化 ==========
             "-rtsp_transport", "tcp",  # TCP 传输（稳定）
@@ -100,90 +106,113 @@ class FFmpegRTSPPlayer(QThread):
                             error_msg = self._process.stderr.read(1024).decode('utf-8', errors='ignore')
                             if error_msg:
                                 logger.error(f"FFmpeg 错误: {error_msg}")
-                        except:
-                            pass
-                    self.error_occurred.emit("流已断开或无数据")
+                                self.error_occurred.emit(error_msg)
+                        except Exception as e:
+                            logger.error(f"读取错误信息失败: {e}")
                     break
+
+                # ✅ 日志优化：只在首次接收和特殊情况下记录
+                if frame_count == 0:
+                    logger.info(f"✅ 首次接收到 5MP 帧数据（{len(frame_data)} 字节）")
 
                 # 检查数据完整性
                 if len(frame_data) != frame_size:
                     logger.warning(f"⚠️ 数据不完整: 期望 {frame_size} 字节，实际 {len(frame_data)} 字节")
                     continue
 
-                # 转换为 numpy 数组
                 try:
-                    frame = np.frombuffer(frame_data, dtype=np.uint8).reshape(
-                        (self.height, self.width, 3)
+                    # 转换为numpy数组（零拷贝）
+                    frame_array = np.frombuffer(frame_data, dtype=np.uint8)
+                    frame_array = frame_array.reshape((self.height, self.width, 3))
+
+                    # 转换为QImage（内存安全）
+                    q_image = QImage(
+                        frame_array.data,
+                        self.width,
+                        self.height,
+                        self.width * 3,
+                        QImage.Format_RGB888
                     )
+
+                    # ✅ 关键修复：深拷贝防止崩溃
+                    q_image = q_image.copy()
+
+                    # 发射信号到UI线程
+                    self.frame_updated.emit(q_image)
+                    frame_count += 1
+
                 except ValueError as e:
                     logger.error(f"❌ 数据格式错误: {e}")
                     continue
 
-                # ✅ 创建 QImage 深拷贝
-                q_image = QImage(
-                    frame.data,
-                    self.width,
-                    self.height,
-                    self.width * 3,
-                    QImage.Format_RGB888
-                ).copy()
-
-                # 发送信号
-                self.frame_updated.emit(q_image)
-
-                frame_count += 1
-                if frame_count == 1:
-                    logger.info("🎉 成功接收第一帧（5MP 分辨率）！")
-                # ✅ 移除周期性帧数日志（不再显示"已处理多少帧"）
-
         except Exception as e:
-            logger.error(f"❌ 拉流失败: {e}", exc_info=True)
-            self.error_occurred.emit(f"拉流失败: {str(e)}")
+            logger.error(f"❌ FFmpeg 拉流异常: {e}", exc_info=True)
+            self.error_occurred.emit(str(e))
         finally:
             self._stop_process()
-            self._is_running = False
-            logger.info("FFmpeg 拉流线程已停止")
+            logger.info("🛑 FFmpeg 拉流已停止")
 
     def _stop_process(self):
-        """终止FFmpeg子进程"""
-        if self._process and self._process.poll() is None:
-            self._process.terminate()
-            self._process.wait()
-            logger.info("FFmpeg 子进程已终止")
+        """停止 FFmpeg 子进程"""
+        if self._process:
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=3)
+                logger.info("✅ FFmpeg 子进程已终止")
+            except Exception as e:
+                logger.warning(f"⚠️ 强制结束 FFmpeg 子进程: {e}")
+                self._process.kill()
 
     def stop(self):
         """停止线程"""
+        logger.info("📴 请求停止拉流...")
         self._is_running = False
         self._stop_process()
-        self.wait()
+        self.wait()  # 等待线程结束
+        logger.info("✅ 拉流线程已停止")
 
 
-# 独立测试
+# ========== 独立测试 ==========
 if __name__ == "__main__":
     import sys
-    from PySide6.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout
-
-    TEST_RTSP_URL = "rtsp://192.168.0.36:554/ch01.264"
+    from PySide6.QtWidgets import QApplication, QLabel
+    from PySide6.QtCore import Qt
 
     app = QApplication(sys.argv)
 
-    window = QWidget()
-    layout = QVBoxLayout(window)
-    label = QLabel("正在连接RTSP流...")
+    # 创建显示窗口
+    label = QLabel()
+    label.setWindowTitle("FFmpeg RTSP Player Ubuntu 测试 (5MP)")
     label.setAlignment(Qt.AlignCenter)
-    label.setMinimumSize(1296, 952)  # 5MP 的 50% 显示大小
-    layout.addWidget(label)
-    window.setWindowTitle("FFmpeg RTSP 5MP 多线程低延迟播放器测试")
-    window.show()
+    label.resize(1280, 960)  # 显示窗口（5MP 按比例缩小）
+    label.show()
 
-    # 使用 5MP 分辨率
-    player = FFmpegRTSPPlayer(TEST_RTSP_URL, 2592, 1904)
-    player.frame_updated.connect(
-        lambda img: label.setPixmap(QPixmap.fromImage(img.scaled(
-            label.width(), label.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-        )))
-    )
-    player.error_occurred.connect(lambda err: label.setText(f"错误：{err}"))
+    # 启动播放器
+    rtsp_url = "rtsp://192.168.0.36:554/ch01.264"  # 替换为你的RTSP地址
+    player = FFmpegRTSPPlayer(rtsp_url, width=2592, height=1904)
+
+
+    # 连接信号
+    def update_label(q_image):
+        """更新 QLabel 显示"""
+        pixmap = QPixmap.fromImage(q_image)
+        # 缩放到窗口大小
+        pixmap = pixmap.scaled(
+            label.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+        label.setPixmap(pixmap)
+
+
+    player.frame_updated.connect(update_label)
+    player.error_occurred.connect(lambda msg: print(f"❌ 错误: {msg}"))
+
+    # 启动播放
     player.start()
 
-    sys.exit(app.exec())
+    # 运行应用
+    try:
+        sys.exit(app.exec())
+    finally:
+        player.stop()
