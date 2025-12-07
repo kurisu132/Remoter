@@ -79,11 +79,11 @@ class MainWindow(QMainWindow):
 
         # PTZ云台客户端
         self.ptz_client = PTZControlClient(
-            host="192.168.0.36", username="admin", password="123456"
+            host="192.168.1.36", username="admin", password="123456"
         )
 
         self.light_config = {
-            "host": "192.168.0.36",
+            "host": "192.168.1.36",
             "username": "admin",
             "password": "123456",
             "opaque": "5ccc069c403ebaf9f0171e9517f40e41"
@@ -194,7 +194,7 @@ class MainWindow(QMainWindow):
 
     # ---------------- RTSP ----------------
     def _start_rtsp_playback(self):
-        rtsp_url = "rtsp://192.168.0.36:554/ch01.264"
+        rtsp_url = "rtsp://192.168.1.36:554/ch01.264"
         width = self.video_label.width() or 1280
         height = self.video_label.height() or 720
         self.rtsp_player = FFmpegRTSPPlayer(rtsp_url, width, height)
@@ -231,7 +231,7 @@ class MainWindow(QMainWindow):
         self.autho_button.setText("认证中...")
         QApplication.processEvents()
         auth_config = {
-            "url": "http://192.168.0.36:80/digest/frmUserLogin",
+            "url": "http://192.168.1.36:80/digest/frmUserLogin",
             "username": "admin",
             "password": "123456",
             "http_method": "POST",

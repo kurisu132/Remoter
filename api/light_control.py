@@ -105,7 +105,7 @@ class LightControlClient:
 if __name__ == "__main__":
     # 设备配置（替换为实际参数）
     client = LightControlClient(
-        host="192.168.0.36",
+        host="192.168.1.36",
         username="admin",
         password="123456",
         opaque="5ccc069c403ebaf9f0171e9517f40e41"  # 从设备WWW-Authenticate头获取

@@ -111,7 +111,7 @@ def digest_auth_request(config):
 # --------------------------
 if __name__ == "__main__":
     test_config = {
-        "url": "http://192.168.0.36:80/digest/frmUserLogin",
+        "url": "http://192.168.1.36:80/digest/frmUserLogin",
         "username": "admin",
         "password": "123456",
         "http_method": "POST",

@@ -188,7 +188,7 @@ if __name__ == "__main__":
     label.show()
 
     # 启动播放器
-    rtsp_url = "rtsp://192.168.0.36:554/ch01.264"  # 替换为你的RTSP地址
+    rtsp_url = "rtsp://192.168.1.36:554/ch01.264"  # 替换为你的RTSP地址
     player = FFmpegRTSPPlayer(rtsp_url, width=2592, height=1904)
 
 
