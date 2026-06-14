@@ -4,7 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-基于 PySide6 的实时 RTSP 摄像头监控 GUI 应用，具备 OpenGL 硬件加速渲染、PTZ（云台）控制和补光灯控制功能。目标设备为 5MP IP 摄像头，地址 `rtsp://192.168.1.36:554/ch01.264`（分辨率 2592×1904）。
+基于 PySide6 的实时 RTSP 摄像头监控 GUI 应用，具备 OpenGL 硬件加速渲染、STM32 摇杆输入、UDP 控制输出、PTZ（云台）控制和补光灯控制功能。
+
+- **目标硬件**：OrangePi 5（RK3588S，ARM64，Ubuntu 22.04，Mali-G610）
+- **目标摄像头**：5MP IP 摄像头，`rtsp://192.168.1.36:554/ch01.264`（分辨率 2592×1904）
+- **工控机 UDP**：目标地址 `192.168.1.11:9000`，协议见 REMOTE_PROTOCOL_v1
+
+详细架构见 `ARCHITECTURE.md`。
+
+---
 
 ## 安装依赖
 
@@ -18,9 +26,7 @@ source ~/.local/bin/env          # 或重新打开终端
 # 安装所有依赖（自动创建 .venv）
 uv sync
 
-# ARM64 / OrangePi 跳过 C 扩展（PyOpenGL-accelerate 无 ARM64 轮子）：
-# uv sync  即可，opengl-accel 是可选项，默认不安装
-
+# ARM64 / OrangePi：跳过 C 扩展（PyOpenGL-accelerate 无 ARM64 轮子），uv sync 即可
 # x86 开发机如需加速扩展：
 # uv sync --extra opengl-accel
 
@@ -33,63 +39,128 @@ FFmpeg 需要系统级安装：
 sudo apt install ffmpeg
 ```
 
+---
+
 ## 运行应用
 
 ```bash
-# 方式 A：通过 uv run（自动使用 .venv）
+# 方式 A：通过 uv run（推荐，自动使用 .venv）
 uv run python gui/main_window.py
 
 # 方式 B：激活虚拟环境后直接运行
 source .venv/bin/activate
 python gui/main_window.py
-
-# 独立测试脚本
-python check.py                        # OpenGL + FFmpeg 集成冒烟测试（实机首跑必做）
-python stream/ffmpeg_player.py         # 纯流媒体测试（QLabel 显示）
-python stream/stm32_reader.py          # STM32 串口读取测试
-python stream/udp_control_sender.py    # UDP 发送测试（目标 127.0.0.1:9000）
-python gui/opengl_checker.py           # OpenGL 库可用性检测
-python api/light_control.py            # 补光灯控制测试
 ```
+
+### 测试脚本
+
+```bash
+# 集成冒烟测试（实机首跑必做）
+uv run python check.py              # 需要连接摄像头
+uv run python check.py --test       # 离线模式（FFmpeg 内置测试图案，无需摄像头）
+
+# 各层独立测试
+uv run python stream/ffmpeg_player.py     # 纯流媒体测试（QLabel 显示）
+uv run python stream/stm32_reader.py      # STM32 串口读取测试（需连接硬件）
+uv run python stream/udp_control_sender.py  # UDP 发送测试（目标 127.0.0.1:9000）
+uv run python gui/opengl_checker.py       # OpenGL 库可用性检测
+uv run python api/light_control.py        # 补光灯控制测试
+```
+
+---
 
 ## 架构说明
 
-数据流向：**FFmpeg 子进程 → `FFmpegRTSPPlayer`（QThread）→ `VideoOpenGLWidget`（OpenGL）→ 屏幕**
+详见 `ARCHITECTURE.md`。以下是快速索引：
 
-### 各层职责
+| 文件 | 类 | 职责 |
+|---|---|---|
+| `gui/main_window.py` | `MainWindow` | 应用入口，代码布局，生命周期管理 |
+| `gui/video_opengl_widget.py` | `VideoOpenGLWidget` | OpenGL 渲染，双模 GLSL 着色器 |
+| `stream/ffmpeg_player.py` | `FFmpegRTSPPlayer` | FFmpeg 子进程，帧读取，QImage 信号 |
+| `stream/stm32_reader.py` | `STM32Reader` / `ControlFrame` | STM32 串口帧解析 |
+| `stream/udp_control_sender.py` | `UDPControlSender` | REMOTE_PROTOCOL_v1 UDP 发送 |
+| `api/ptz_control.py` | `PTZControlClient` | PTZ 云台 HTTP 控制 |
+| `api/light_control.py` | `LightControlClient` | 补光灯 HTTP 控制 |
+| `api/digest_auth.py` | — | HTTP Digest 认证辅助 |
 
-**`stream/ffmpeg_player.py`** — `FFmpegRTSPPlayer(QThread)`
-- 启动 FFmpeg 子进程，使用低延迟参数和 4 线程 slice 级并行 H.264 解码
-- 从 stdout 管道读取原始 RGB24 帧，通过 `frame_updated(QImage)` 信号发送到 UI 线程
-- 发生错误时发射 `error_occurred(str)` 信号
+**关键约束**：`QSurfaceFormat` 必须在 `QApplication` 之前设置。
 
-**`gui/video_opengl_widget.py`** — `VideoOpenGLWidget(QOpenGLWidget)`
-- 通过 `update_frame()` 接收 `QImage` 帧并上传到 GPU 纹理
-- 使用 OpenGL 3.3 Core Profile GLSL 着色器渲染（VAO + VBO 管线）
-- VBO 纹理坐标做了 Y 轴翻转，以修正 QImage 方向
-- 销毁前需调用 `cleanup()` 释放 GPU 资源
+---
 
-**`gui/main_window.py`** — `MainWindow(QWidget)`
-- 直接运行时的程序入口；从 `ui/window_ui.py` 加载 `Ui_Camera`
-- 将 `FFmpegRTSPPlayer.frame_updated` 连接到 `VideoOpenGLWidget.update_frame`
-- 支持 F11/ESC 切换全屏，`closeEvent` 中完整释放所有资源
+## 开发工作流
 
-**`api/ptz_control.py`** — `PTZControlClient`
-- 通过 HTTP POST 到 `/digest/frmPTZControl` 控制云台
-- 使用持久 `requests.Session` 进行手动 HTTP Digest 认证（两步流程：401 → 带认证头重发）
-- PTZ 命令码：20=停止，21=上，22=下，23=左，24=右
+### Git Remote 配置
 
-**`api/light_control.py`** — `LightControlClient`
-- 通过 `/digest/frmIotLightCfg` 控制补光灯
-- 相同的 Digest 认证模式，但每次请求使用新会话（无状态）
+本项目配置两个远端：
 
-**`api/digest_auth.py`** — `digest_auth_request(config)`
-- 通用 Digest 认证辅助函数，支持 3 次重试，用于一次性请求
+```
+origin   → GitHub（https://github.com/kurisu132/Remoter.git）存档备份
+orangepi → OrangePi 直推（orangepi@192.168.1.10:/home/orangepi/PythonProjects/vlink）实机测试
+```
 
-### OpenGL 关键约束
+查看当前配置：
+```bash
+git remote -v
+```
 
-`QSurfaceFormat`（OpenGL 3.3 Core Profile）**必须在创建 `QApplication` 之前设置**，否则 OpenGL 上下文将无法正确初始化。参见 `gui/main_window.py` 中 `if __name__ == "__main__"` 块里的初始化顺序。
+### 日常开发循环
 
-### UI 提升控件
+```bash
+# 1. 在 Windows 上编写代码（Claude Code）
 
-`ui/window_ui.py` 将 `video_widget` 实例化为提升类型 `VideoOpenGLWidget`。布局中的标准 `QOpenGLWidget`（`openGLWidget`）当前未用于渲染，所有视频均通过 `video_widget` 显示。
+# 2. 提交
+git add <files>
+git commit -m "..."
+
+# 3. 推送到 OrangePi（用于测试）
+git push orangepi dev/phase1-refactor
+
+# 4. OrangePi 上拉取并测试
+#    （通过 VS Code Remote SSH 或直接 SSH）
+git pull   # OrangePi 端已配置 updateInstead，push 即生效，无需手动 pull
+uv run python check.py --test   # 离线验证
+uv run python gui/main_window.py  # 完整测试
+
+# 5. 功能验证通过后推送到 GitHub 存档
+git push origin dev/phase1-refactor
+```
+
+### VS Code Remote SSH
+
+SSH 配置（`~/.ssh/config`）：
+```
+Host orangepi
+    HostName 192.168.1.10
+    User orangepi
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+```
+
+OrangePi IP：192.168.1.10（eth0 静态 IP，直连网线）  
+开发机 IP：192.168.1.12
+
+连接方式：VS Code → Ctrl+Shift+P → "Remote-SSH: Connect to Host..." → 选择 `orangepi`
+
+### OrangePi 首次初始化
+
+```bash
+# OrangePi 上（仅首次）
+mkdir -p ~/PythonProjects/vlink
+cd ~/PythonProjects/vlink
+git init
+git config receive.denyCurrentBranch updateInstead
+
+# Windows 上添加 remote（仅首次）
+git remote add orangepi orangepi@192.168.1.10:/home/orangepi/PythonProjects/vlink
+```
+
+---
+
+## 注意事项
+
+- OrangePi 直连网线后**无法访问 GitHub**（无互联网路由），使用直推方式开发
+- 摄像头 `192.168.1.36` 需要单独网络链路，直连时不可达——开发时使用 `--test` 模式
+- `libGL error: failed to load driver: rockchip` 是 OrangePi 上的无害警告，Mesa Panfrost 接管后 OpenGL 3.3 Desktop 正常工作

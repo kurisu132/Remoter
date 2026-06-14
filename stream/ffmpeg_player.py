@@ -37,50 +37,55 @@ class FFmpegRTSPPlayer(QThread):
         self.ffmpeg_path = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
         logger.info(f"✅ FFmpeg 路径: {self.ffmpeg_path}")
 
+    def _build_cmd(self) -> list:
+        """根据 URL 类型构建 FFmpeg 命令。test:// 使用内置测试图案，无需摄像头。"""
+        if self.rtsp_url.startswith("test://"):
+            return [
+                self.ffmpeg_path,
+                "-f", "lavfi",
+                "-i", f"testsrc=size={self.width}x{self.height}:rate=15",
+                "-pix_fmt", "rgb24",
+                "-f", "rawvideo",
+                "-vcodec", "rawvideo",
+                "-an", "-sn",
+                "-loglevel", "error",
+                "-",
+            ]
+        return [
+            self.ffmpeg_path,
+            "-rtsp_transport", "tcp",
+            "-fflags", "nobuffer",
+            "-flags", "low_delay",
+            "-probesize", "2048",
+            "-analyzeduration", "1000000",
+            "-i", self.rtsp_url,
+            "-vf", f"scale={self.width}:{self.height}:flags=fast_bilinear",
+            "-sws_flags", "fast_bilinear",
+            "-pix_fmt", "rgb24",
+            "-f", "rawvideo",
+            "-vcodec", "rawvideo",
+            "-threads", "4",
+            "-thread_type", "slice",
+            "-an", "-sn",
+            "-loglevel", "error",
+            "-",
+        ]
+
     def run(self) -> None:
         """启动FFmpeg拉流，读取帧并发送到UI"""
         self._is_running = True
 
-        # ✅ 5MP 多线程优化命令（Ubuntu）
-        ffmpeg_cmd = [
-            self.ffmpeg_path,  # ✅ 使用检测到的 FFmpeg 路径
-
-            # ========== 输入优化 ==========
-            "-rtsp_transport", "tcp",  # TCP 传输（稳定）
-            "-fflags", "nobuffer",  # 禁用缓冲区
-            "-flags", "low_delay",  # 低延迟标志
-            "-probesize", "2048",  # 2KB 探测（适应更大分辨率）
-            "-analyzeduration", "1000000",  # 1 秒分析（适应更高码率）
-
-            # ========== 输入源 ==========
-            "-i", self.rtsp_url,  # RTSP 地址
-
-            # ========== 解码和缩放优化 ==========
-            # 如果摄像头输出已经是 5MP，缩放操作会自动跳过（无性能损失）
-            # 如果不是 5MP，使用快速双线性缩放
-            "-vf", f"scale={self.width}:{self.height}:flags=fast_bilinear",
-            "-sws_flags", "fast_bilinear",  # 快速缩放算法
-
-            # ========== 输出格式 ==========
-            "-pix_fmt", "rgb24",  # RGB24 格式
-            "-f", "rawvideo",  # 原始视频流
-            "-vcodec", "rawvideo",  # 原始视频编码
-
-            # ========== 5MP 性能优化关键：多线程解码 ==========
-            "-threads", "4",  # 使用 4 个线程（加速解码）
-            "-thread_type", "slice",  # slice 级别并行（最适合 H.264）
-
-            # ========== 其他设置 ==========
-            "-an", "-sn",  # 忽略音频和字幕
-            "-loglevel", "error",  # 仅显示错误日志
-            "-"  # 输出到管道
-        ]
+        ffmpeg_cmd = self._build_cmd()
+        is_test = self.rtsp_url.startswith("test://")
 
         try:
-            logger.info(f"🚀 启动 5MP 多线程低延迟模式 FFmpeg 拉流")
-            logger.info(f"📐 目标分辨率: {self.width}x{self.height}")
-            logger.info(f"🧵 多线程解码: 4 线程 (slice 级并行)")
-            logger.info(f"💡 提示：摄像头应配置为 2592x1904@15-20fps，码率 6000-8000Kbps")
+            if is_test:
+                logger.info(f"🧪 离线测试模式（lavfi testsrc）{self.width}x{self.height}@15fps")
+            else:
+                logger.info(f"🚀 启动 5MP 多线程低延迟模式 FFmpeg 拉流")
+                logger.info(f"📐 目标分辨率: {self.width}x{self.height}")
+                logger.info(f"🧵 多线程解码: 4 线程 (slice 级并行)")
+                logger.info(f"💡 提示：摄像头应配置为 2592x1904@15-20fps，码率 6000-8000Kbps")
 
             # 启动FFmpeg子进程
             self._process = sp.Popen(

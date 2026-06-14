@@ -1,8 +1,12 @@
 """
 OpenGL + FFmpeg 集成冒烟测试
 使用生产用 VideoOpenGLWidget，验证端到端渲染路径在当前硬件上是否可用。
-运行方式：python check.py
+
+运行方式：
+  python check.py           # 连接真实摄像头
+  python check.py --test    # 离线模式（FFmpeg 内置测试图案，无需摄像头）
 """
+import signal
 import sys
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout
 from PySide6.QtGui import QSurfaceFormat
@@ -10,10 +14,14 @@ from PySide6.QtGui import QSurfaceFormat
 from gui.video_opengl_widget import VideoOpenGLWidget
 from stream.ffmpeg_player import FFmpegRTSPPlayer
 
-RTSP_URL = "rtsp://192.168.1.36:554/ch01.264"
+RTSP_URL  = "rtsp://192.168.1.36:554/ch01.264"
+TEST_URL  = "test://offline"
 WIDTH, HEIGHT = 2592, 1904
 
 if __name__ == "__main__":
+    use_test = "--test" in sys.argv
+    url = TEST_URL if use_test else RTSP_URL
+
     # QSurfaceFormat 必须在 QApplication 之前设置
     fmt = QSurfaceFormat()
     fmt.setVersion(3, 3)
@@ -25,7 +33,8 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
 
     window = QWidget()
-    window.setWindowTitle("OpenGL + FFmpeg 集成冒烟测试")
+    title = "OpenGL + FFmpeg 集成冒烟测试" + (" [离线测试源]" if use_test else "")
+    window.setWindowTitle(title)
     window.resize(1280, 720)
 
     layout = QVBoxLayout()
@@ -33,7 +42,7 @@ if __name__ == "__main__":
     layout.addWidget(video_widget)
     window.setLayout(layout)
 
-    player = FFmpegRTSPPlayer(RTSP_URL, WIDTH, HEIGHT)
+    player = FFmpegRTSPPlayer(url, WIDTH, HEIGHT)
 
     frame_count = [0]
 
@@ -47,8 +56,11 @@ if __name__ == "__main__":
     player.error_occurred.connect(lambda msg: print(f"error: {msg}"))
     player.start()
 
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+
     window.show()
-    print(f"connecting to {RTSP_URL} ...")
+    src = "test source (offline)" if use_test else url
+    print(f"source: {src}")
     print("OpenGL mode will be logged by VideoOpenGLWidget at startup.")
 
     try:
