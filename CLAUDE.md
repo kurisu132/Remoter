@@ -45,7 +45,7 @@ sudo apt install ffmpeg
 
 ```bash
 # 方式 A：通过 uv run（推荐，自动使用 .venv）
-uv run python gui/main_window.py
+uv run python -m gui.main_window
 
 # 方式 B：激活虚拟环境后直接运行
 source .venv/bin/activate
