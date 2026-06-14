@@ -1,0 +1,25 @@
+[project]
+name = "vlink"
+version = "0.1.0"
+description = "RTSP camera monitor with PTZ/light control and STM32 joystick input — OrangePi 5 (RK3588S / Mali-G610)"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6==6.8.0.2",
+    "PySide6-Essentials==6.8.0.2",
+    "PySide6-Addons==6.8.0.2",
+    "PyOpenGL==3.1.10",
+    "numpy>=1.24.0,<2.0",
+    "requests>=2.31.0",
+    "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+# PyOpenGL-accelerate 是 C 扩展，ARM64 (OrangePi 5) 上可能无预编译包。
+# x86 开发机可用：uv sync --extra opengl-accel
+# ARM64 / OrangePi 跳过（纯 Python PyOpenGL 功能完整）
+opengl-accel = [
+    "PyOpenGL-accelerate==3.1.10",
+]
+
+[tool.uv]
+# uv sync 自动创建 .venv，无需手动 python -m venv

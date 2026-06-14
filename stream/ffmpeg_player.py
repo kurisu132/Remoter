@@ -3,7 +3,7 @@ import subprocess as sp
 import shutil
 import numpy as np
 from PySide6.QtCore import QThread, Signal, Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -28,8 +28,8 @@ class FFmpegRTSPPlayer(QThread):
     def __init__(self, rtsp_url: str, width=2592, height=1904, parent=None):
         super().__init__(parent)
         self.rtsp_url = rtsp_url  # RTSP流地址
-        self.width = 2592  # 目标宽度（2592）
-        self.height = 1904  # 目标高度（1904）
+        self.width = width
+        self.height = height
         self._is_running = False  # 线程运行标志
         self._process = None  # FFmpeg子进程句柄
 
@@ -164,12 +164,10 @@ class FFmpegRTSPPlayer(QThread):
                 self._process.kill()
 
     def stop(self):
-        """停止线程"""
-        logger.info("📴 请求停止拉流...")
+        """发出停止信号并终止 FFmpeg 子进程，不阻塞等待线程——由调用方负责 wait()"""
+        logger.info("请求停止拉流...")
         self._is_running = False
         self._stop_process()
-        self.wait()  # 等待线程结束
-        logger.info("✅ 拉流线程已停止")
 
 
 # ========== 独立测试 ==========
@@ -177,6 +175,7 @@ if __name__ == "__main__":
     import sys
     from PySide6.QtWidgets import QApplication, QLabel
     from PySide6.QtCore import Qt
+    from PySide6.QtGui import QPixmap
 
     app = QApplication(sys.argv)
 

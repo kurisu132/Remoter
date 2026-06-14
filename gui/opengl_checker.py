@@ -13,36 +13,18 @@ class OpenGLChecker:
     """OpenGL环境检测器"""
 
     @staticmethod
-    def check_opengl_support():
-        """
-        检测OpenGL支持
-
-        Returns:
-            bool: True=支持, False=不支持
-        """
+    def check_opengl_support() -> bool:
+        """检测 PyOpenGL 和 PySide6 OpenGL 模块是否可导入（只读检测，无副作用）"""
         try:
-            # 检查PyOpenGL导入
-            import OpenGL.GL as GL
-            from PySide6.QtOpenGLWidgets import QOpenGLWidget
-
-            # 检查OpenGL版本
-            from PySide6.QtGui import QOpenGLContext, QSurfaceFormat
-
-            # 创建临时上下文检测
-            fmt = QSurfaceFormat()
-            fmt.setVersion(3, 3)
-            fmt.setProfile(QSurfaceFormat.CoreProfile)
-            QSurfaceFormat.setDefaultFormat(fmt)
-
-            logger.info("✅ OpenGL库导入成功")
-            logger.info("✅ PySide6 OpenGL模块可用")
+            import OpenGL.GL  # noqa: F401
+            from PySide6.QtOpenGLWidgets import QOpenGLWidget  # noqa: F401
+            logger.info("OpenGL libraries available")
             return True
-
         except ImportError as e:
-            logger.warning(f"❌ OpenGL导入失败: {e}")
+            logger.warning(f"OpenGL import failed: {e}")
             return False
         except Exception as e:
-            logger.warning(f"❌ OpenGL检测异常: {e}")
+            logger.warning(f"OpenGL check error: {e}")
             return False
 
     @staticmethod

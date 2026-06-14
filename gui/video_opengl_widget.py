@@ -1,25 +1,15 @@
 """
 VideoOpenGLWidget - OpenGL 硬件加速视频渲染控件
-修复版：添加 VAO 支持，解决 GL_INVALID_OPERATION 错误
+支持 OpenGL 3.3 Core Profile（x86/桌面）和 OpenGL ES 3.0（ARM/Mali-G610）双模式。
+initializeGL 内通过 context().isOpenGLES() 自动选择对应 GLSL 版本，无需外部配置。
 """
-import sys
 import logging
 import numpy as np
 
-# ✅ 兼容不同 PySide6 版本的导入路径
-try:
-    from PySide6.QtOpenGLWidgets import QOpenGLWidget
-except ImportError:
-    try:
-        from PySide6.QtWidgets import QOpenGLWidget
-    except ImportError:
-        from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-
-from PySide6.QtCore import Qt
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QImage
 from OpenGL.GL import *
 
-# ✅ 彻底禁用错误检查器
 import OpenGL
 OpenGL.ERROR_CHECKING = False
 OpenGL.ERROR_LOGGING = False
@@ -30,39 +20,72 @@ logger = logging.getLogger("VideoOpenGLWidget")
 
 
 class VideoOpenGLWidget(QOpenGLWidget):
+    # ---------- GLSL 3.3 Core (x86 桌面) ----------
+    _VERT_DESKTOP = """
+    #version 330 core
+    layout(location = 0) in vec2 position;
+    layout(location = 1) in vec2 texCoord;
+    out vec2 vTexCoord;
+    void main() {
+        gl_Position = vec4(position, 0.0, 1.0);
+        vTexCoord = texCoord;
+    }
     """
-    使用 OpenGL 硬件加速渲染视频流的自定义控件
+    _FRAG_DESKTOP = """
+    #version 330 core
+    in vec2 vTexCoord;
+    out vec4 fragColor;
+    uniform sampler2D videoTexture;
+    void main() {
+        fragColor = texture(videoTexture, vTexCoord);
+    }
+    """
 
-    修复特性：
-    - ✅ 添加 VAO 支持（修复 GL_INVALID_OPERATION）
-    - ✅ 兼容多个 PySide6 版本
-    - ✅ 禁用 PyOpenGL 错误检查器
-    - ✅ 纹理坐标 Y 轴翻转
-    - ✅ 支持 5MP (2592x1904) 高分辨率
+    # ---------- GLSL 300 es (ARM/Mali-G610 + Panfrost) ----------
+    _VERT_ES = """
+    #version 300 es
+    layout(location = 0) in vec2 position;
+    layout(location = 1) in vec2 texCoord;
+    out vec2 vTexCoord;
+    void main() {
+        gl_Position = vec4(position, 0.0, 1.0);
+        vTexCoord = texCoord;
+    }
+    """
+    _FRAG_ES = """
+    #version 300 es
+    precision mediump float;
+    in vec2 vTexCoord;
+    out vec4 fragColor;
+    uniform sampler2D videoTexture;
+    void main() {
+        fragColor = texture(videoTexture, vTexCoord);
+    }
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._is_es = False          # 由 initializeGL 赋值，勿提前使用
         self.texture_id = None
         self.shader_program = None
-        self.vao = None  # ✅ 新增：VAO
+        self.vao = None
         self.vbo_vertices = None
         self.vbo_tex_coords = None
         self.current_frame = None
         self.frame_count = 0
         self.frame_width = 0
         self.frame_height = 0
-        logger.info("✅ VideoOpenGLWidget 初始化完成")
+        logger.info("VideoOpenGLWidget initialized")
 
     def initializeGL(self):
-        """初始化 OpenGL 环境"""
+        """初始化 OpenGL 环境，自动检测 ES / Desktop 模式"""
         try:
-            logger.info("🎨 开始初始化 OpenGL 环境...")
+            self._is_es = self.context().isOpenGLES()
+            mode = "OpenGL ES 3.0" if self._is_es else "OpenGL 3.3 Desktop"
+            logger.info(f"OpenGL context: {mode}")
 
-            # 清屏颜色
             glClearColor(0.0, 0.0, 0.0, 1.0)
 
-            # 创建纹理
             self.texture_id = glGenTextures(1)
             glBindTexture(GL_TEXTURE_2D, self.texture_id)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
@@ -71,79 +94,49 @@ class VideoOpenGLWidget(QOpenGLWidget):
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
             glBindTexture(GL_TEXTURE_2D, 0)
 
-            # ✅ 创建 VAO（关键修复）
             self.vao = glGenVertexArrays(1)
-            logger.info(f"✅ VAO 创建成功 (ID: {self.vao})")
-
-            # 编译着色器
             self.shader_program = self._compile_shaders()
-
-            # ✅ 创建 VBO 并绑定到 VAO
             self._create_vbo()
 
-            logger.info("✅ OpenGL 初始化成功（纹理、VAO、着色器、VBO 已就绪）")
+            logger.info("OpenGL initialized (texture / VAO / shader / VBO ready)")
 
         except Exception as e:
-            logger.error(f"❌ initializeGL 失败: {e}", exc_info=True)
+            logger.error(f"initializeGL failed: {e}", exc_info=True)
 
     def _compile_shaders(self):
-        """编译顶点和片段着色器"""
-        # 顶点着色器
-        vertex_shader_source = """
-        #version 330 core
-        layout(location = 0) in vec2 position;
-        layout(location = 1) in vec2 texCoord;
-        out vec2 vTexCoord;
-        void main() {
-            gl_Position = vec4(position, 0.0, 1.0);
-            vTexCoord = texCoord;
-        }
-        """
+        """编译顶点和片段着色器，根据 ES / Desktop 自动选择 GLSL 版本"""
+        vert_src = self._VERT_ES if self._is_es else self._VERT_DESKTOP
+        frag_src = self._FRAG_ES if self._is_es else self._FRAG_DESKTOP
 
-        # 片段着色器
-        fragment_shader_source = """
-        #version 330 core
-        in vec2 vTexCoord;
-        out vec4 fragColor;
-        uniform sampler2D videoTexture;
-        void main() {
-            fragColor = texture(videoTexture, vTexCoord);
-        }
-        """
-
-        # 编译顶点着色器
         vertex_shader = glCreateShader(GL_VERTEX_SHADER)
-        glShaderSource(vertex_shader, vertex_shader_source)
+        glShaderSource(vertex_shader, vert_src)
         glCompileShader(vertex_shader)
         if not glGetShaderiv(vertex_shader, GL_COMPILE_STATUS):
             error = glGetShaderInfoLog(vertex_shader).decode()
-            logger.error(f"❌ 顶点着色器编译失败: {error}")
-            raise RuntimeError("顶点着色器编译失败")
+            logger.error(f"vertex shader compile error: {error}")
+            raise RuntimeError("vertex shader compile failed")
 
-        # 编译片段着色器
         fragment_shader = glCreateShader(GL_FRAGMENT_SHADER)
-        glShaderSource(fragment_shader, fragment_shader_source)
+        glShaderSource(fragment_shader, frag_src)
         glCompileShader(fragment_shader)
         if not glGetShaderiv(fragment_shader, GL_COMPILE_STATUS):
             error = glGetShaderInfoLog(fragment_shader).decode()
-            logger.error(f"❌ 片段着色器编译失败: {error}")
-            raise RuntimeError("片段着色器编译失败")
+            logger.error(f"fragment shader compile error: {error}")
+            raise RuntimeError("fragment shader compile failed")
 
-        # 链接着色器程序
         shader_program = glCreateProgram()
         glAttachShader(shader_program, vertex_shader)
         glAttachShader(shader_program, fragment_shader)
         glLinkProgram(shader_program)
         if not glGetProgramiv(shader_program, GL_LINK_STATUS):
             error = glGetProgramInfoLog(shader_program).decode()
-            logger.error(f"❌ 着色器程序链接失败: {error}")
-            raise RuntimeError("着色器程序链接失败")
+            logger.error(f"shader link error: {error}")
+            raise RuntimeError("shader link failed")
 
-        # 删除独立的着色器对象
         glDeleteShader(vertex_shader)
         glDeleteShader(fragment_shader)
 
-        logger.info("✅ 着色器编译成功")
+        logger.info("shaders compiled successfully")
         return shader_program
 
     def _create_vbo(self):

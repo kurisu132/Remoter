@@ -1,194 +1,241 @@
-import sys
-import logging
-from PySide6.QtWidgets import QApplication, QWidget, QMessageBox
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap, QFont, QSurfaceFormat
+"""
+MainWindow — Phase 1 控制框架
 
-# ✅ 导入编译后的UI类
-from ui.window_ui import Ui_Camera
+布局：
+  ┌──────────────────────────────────┐
+  │        VideoOpenGLWidget         │  ← 占满剩余空间
+  ├──────────────────────────────────┤
+  │ STM32:● UDP:● ESTOP:○ R-ACT:○  IP:[___________] [连接] │  ← 状态栏
+  └──────────────────────────────────┘
+
+依赖关系（仅 Phase 1）：
+  stream/ffmpeg_player.py   — 视频流
+  stream/stm32_reader.py    — STM32 串口输入
+  stream/udp_control_sender.py — UDP 控制发送
+  gui/video_opengl_widget.py — OpenGL 渲染
+"""
+import logging
+import sys
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont, QSurfaceFormat
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+
 from gui.video_opengl_widget import VideoOpenGLWidget
 from stream.ffmpeg_player import FFmpegRTSPPlayer
+from stream.stm32_reader import ControlFrame, STM32Reader
+from stream.udp_control_sender import UDPControlSender, load_config
 
-# 日志配置
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MainWindow")
 
+RTSP_URL   = "rtsp://192.168.1.36:554/ch01.264"
+FRAME_W    = 2592
+FRAME_H    = 1904
+STM32_PORT = "/dev/ttyACM0"
 
-# ---------------- 主窗口 ----------------
+# 状态指示颜色
+_GREEN = "color: #00cc44; font-size: 16px;"
+_RED   = "color: #ff3333; font-size: 16px;"
+_GRAY  = "color: #888888; font-size: 16px;"
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-
-        # ✅ 加载编译后的UI
-        self.ui = Ui_Camera()
-        self.ui.setupUi(self)
-
-        # RTSP播放器线程
-        self.rtsp_player = None
-
-        # 初始化视频控件
-        self._init_video_widget()
-
-        # 启动RTSP视频流
-        self._start_rtsp_playback()
-
-        # 窗口设置
+        self._build_ui()
+        self._start_rtsp()
+        self._start_stm32()
+        self._start_udp_sender()
         self.resize(1280, 800)
-        self.setWindowTitle("RTSP 视频监控终端 - OpenGL加速")
+        self.setWindowTitle("VLink 监控终端")
+        logger.info("MainWindow initialized")
 
-        logger.info("✅ 主窗口初始化完成")
+    # ------------------------------------------------------------------ UI
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-    # ---------------- 视频控件初始化 ----------------
-    def _init_video_widget(self):
-        """初始化视频显示控件"""
-        # ✅ 检查 video_widget 是否是 VideoOpenGLWidget 实例
-        if isinstance(self.ui.video_widget, VideoOpenGLWidget):
-            logger.info("✅ VideoOpenGLWidget 加载成功，使用OpenGL硬件渲染")
-            self.video_widget = self.ui.video_widget
-        else:
-            logger.error("❌ video_widget 不是 VideoOpenGLWidget 类型")
-            QMessageBox.critical(self, "错误", "视频控件类型错误，无法使用OpenGL渲染")
-            sys.exit(1)
+        # ── 视频区 ──
+        self.video_widget = VideoOpenGLWidget()
+        self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        root.addWidget(self.video_widget)
 
-        # 设置视频控件属性
-        logger.info(f"视频控件尺寸: {self.video_widget.width()}x{self.video_widget.height()}")
+        # ── 状态栏 ──
+        bar = QWidget()
+        bar.setFixedHeight(44)
+        bar.setStyleSheet("background: #1a1a1a;")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(12, 0, 12, 0)
+        h.setSpacing(20)
 
-    # ---------------- RTSP视频流 ----------------
-    def _start_rtsp_playback(self):
-        """启动RTSP视频播放"""
-        # RTSP视频流地址
-        rtsp_url = "rtsp://192.168.1.36:554/ch01.264"
+        self._lbl_stm32  = self._dot_label("STM32")
+        self._lbl_udp    = self._dot_label("UDP")
+        self._lbl_estop  = self._dot_label("ESTOP")
+        self._lbl_remote = self._dot_label("REMOTE")
+        for w in (self._lbl_stm32, self._lbl_udp, self._lbl_estop, self._lbl_remote):
+            h.addWidget(w)
 
-        # 获取视频控件尺寸
-        width = self.video_widget.width() or 1280
-        height = self.video_widget.height() or 720
+        h.addStretch()
 
-        # 创建RTSP播放器
-        self.rtsp_player = FFmpegRTSPPlayer(rtsp_url, width, height)
+        lbl_ip = QLabel("目标 IP:")
+        lbl_ip.setStyleSheet("color: #cccccc;")
+        h.addWidget(lbl_ip)
 
-        # 连接信号
-        self.rtsp_player.frame_updated.connect(self._update_video_frame)
+        cfg = load_config()
+        self._ip_edit = QLineEdit(cfg.get("target_ip", "192.168.1.11"))
+        self._ip_edit.setFixedWidth(140)
+        self._ip_edit.setStyleSheet(
+            "background:#2a2a2a; color:#ffffff; border:1px solid #555; padding:2px 6px;"
+        )
+        h.addWidget(self._ip_edit)
+
+        btn = QPushButton("连接")
+        btn.setFixedWidth(60)
+        btn.setStyleSheet(
+            "background:#005599; color:#fff; border:none; padding:4px;"
+            "border-radius:3px;"
+        )
+        btn.clicked.connect(self._on_connect)
+        h.addWidget(btn)
+
+        root.addWidget(bar)
+
+        # 定时刷新 UDP 连通状态（每 2 秒）
+        self._udp_ok_timer = QTimer(self)
+        self._udp_ok_timer.setInterval(2000)
+        self._udp_ok_timer.timeout.connect(self._refresh_udp_indicator)
+        self._udp_ok_timer.start()
+
+    @staticmethod
+    def _dot_label(name: str) -> QLabel:
+        lbl = QLabel(f"● {name}")
+        lbl.setStyleSheet(_GRAY)
+        lbl.setFont(QFont("Monospace", 9))
+        return lbl
+
+    # ------------------------------------------------------------------ RTSP
+    def _start_rtsp(self):
+        self.rtsp_player = FFmpegRTSPPlayer(RTSP_URL, FRAME_W, FRAME_H)
+        self.rtsp_player.frame_updated.connect(self.video_widget.update_frame)
         self.rtsp_player.error_occurred.connect(self._on_video_error)
-
-        # 启动播放
         self.rtsp_player.start()
+        logger.info(f"RTSP player started: {RTSP_URL}")
 
-        logger.info(f"✅ RTSP视频流启动: {rtsp_url} ({width}x{height})")
+    # ------------------------------------------------------------------ STM32
+    def _start_stm32(self):
+        self.stm32 = STM32Reader(port=STM32_PORT)
+        self.stm32.frame_received.connect(self._on_stm32_frame)
+        self.stm32.error_occurred.connect(self._on_stm32_error)
+        self.stm32.start()
 
-    def _update_video_frame(self, q_image):
-        """
-        更新视频帧显示
-        :param q_image: QImage对象
-        """
-        # ✅ 使用OpenGL渲染更新帧
-        if hasattr(self.video_widget, 'update_frame'):
-            self.video_widget.update_frame(q_image)
-        else:
-            # 降级方案：使用QLabel显示（如果video_widget不支持update_frame）
-            logger.warning("VideoOpenGLWidget 不支持 update_frame 方法，使用降级方案")
-            pix = QPixmap.fromImage(
-                q_image.scaled(
-                    self.video_widget.width(),
-                    self.video_widget.height(),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation
-                )
-            )
-            if hasattr(self.video_widget, 'setPixmap'):
-                self.video_widget.setPixmap(pix)
+    def _on_stm32_frame(self, frame: ControlFrame):
+        self._lbl_stm32.setStyleSheet(_GREEN)
+        self.udp_sender.update(frame)
+        # 更新 ESTOP / REMOTE 指示
+        self._lbl_estop.setStyleSheet(_RED if frame.estop else _GRAY)
+        self._lbl_remote.setStyleSheet(_GREEN if frame.remote_active else _GRAY)
 
-    def _on_video_error(self, error_msg):
-        """
-        视频流错误处理
-        :param error_msg: 错误信息
-        """
-        logger.error(f"❌ 视频流错误: {error_msg}")
-        QMessageBox.warning(self, "视频流错误", f"视频流发生错误:\n{error_msg}")
+    def _on_stm32_error(self, msg: str):
+        self._lbl_stm32.setStyleSheet(_RED)
+        logger.warning(f"STM32 error: {msg}")
 
-    # ---------------- 键盘事件处理 ----------------
+    # ------------------------------------------------------------------ UDP
+    def _start_udp_sender(self):
+        self.udp_sender = UDPControlSender()
+        self.udp_sender.send_error.connect(self._on_udp_error)
+        self.udp_sender.start()
+        self._udp_last_error = False
+
+    def _on_udp_error(self, msg: str):
+        self._udp_last_error = True
+        self._lbl_udp.setStyleSheet(_RED)
+        logger.warning(f"UDP send error: {msg}")
+
+    def _refresh_udp_indicator(self):
+        if not self._udp_last_error:
+            self._lbl_udp.setStyleSheet(_GREEN)
+        self._udp_last_error = False
+
+    def _on_connect(self):
+        ip = self._ip_edit.text().strip()
+        if not ip:
+            return
+        self.udp_sender.set_target(ip)
+        logger.info(f"UDP target set to {ip}")
+
+    # ------------------------------------------------------------------ 事件
+    def _on_video_error(self, msg: str):
+        logger.error(f"video error: {msg}")
+        QMessageBox.warning(self, "视频流错误", msg)
+
     def keyPressEvent(self, event):
-        """键盘事件处理 - 支持ESC退出全屏，F11切换全屏"""
-        if event.key() == Qt.Key_Escape:
-            if self.isFullScreen():
-                self.showNormal()
-                logger.info("退出全屏")
-        elif event.key() == Qt.Key_F11:
-            if self.isFullScreen():
-                self.showNormal()
-                logger.info("退出全屏")
-            else:
-                self.showFullScreen()
-                logger.info("进入全屏")
+        if event.key() == Qt.Key.Key_F11:
+            self.showNormal() if self.isFullScreen() else self.showFullScreen()
+        elif event.key() == Qt.Key.Key_Escape and self.isFullScreen():
+            self.showNormal()
         else:
             super().keyPressEvent(event)
 
-    # ---------------- 资源清理 ----------------
     def closeEvent(self, event):
-        """窗口关闭事件 - 清理资源"""
-        logger.info("开始清理资源...")
+        logger.info("closing, releasing resources...")
 
-        # ✅ 断开RTSP信号连接
-        if self.rtsp_player:
-            try:
-                self.rtsp_player.frame_updated.disconnect()
-                self.rtsp_player.error_occurred.disconnect()
-                logger.info("✅ RTSP信号已断开")
-            except Exception as e:
-                logger.warning(f"断开RTSP信号失败: {e}")
+        # 断开信号
+        try:
+            self.rtsp_player.frame_updated.disconnect()
+            self.rtsp_player.error_occurred.disconnect()
+        except Exception:
+            pass
 
-        # ✅ 停止RTSP线程
-        if self.rtsp_player and self.rtsp_player.isRunning():
-            logger.info("正在停止RTSP播放器...")
-            self.rtsp_player.stop()
-            self.rtsp_player.wait(2000)  # 等待最多2秒
+        # 停止 RTSP（最多等 2 秒）
+        self.rtsp_player.stop()
+        if not self.rtsp_player.wait(2000):
+            logger.warning("RTSP thread timeout, terminating")
+            self.rtsp_player.terminate()
+            self.rtsp_player.wait(500)
 
-            if self.rtsp_player.isRunning():
-                logger.warning("RTSP线程未能正常停止，强制终止")
-                self.rtsp_player.terminate()
-            else:
-                logger.info("✅ RTSP播放器已停止")
+        # 停止 STM32 读取
+        self.stm32.stop()
+        self.stm32.wait(1000)
 
-        # ✅ 清理OpenGL资源
-        if hasattr(self.video_widget, 'cleanup'):
-            try:
-                self.video_widget.cleanup()
-                logger.info("✅ OpenGL资源已清理")
-            except Exception as e:
-                logger.error(f"清理OpenGL资源失败: {e}")
+        # 停止 UDP 发送
+        self.udp_sender.stop()
+        self.udp_sender.wait(1000)
 
-        # 释放引用
-        self.rtsp_player = None
+        # 释放 GPU 资源
+        self.video_widget.cleanup()
 
-        logger.info("✅ 资源清理完成，窗口即将关闭")
+        logger.info("all resources released")
         event.accept()
 
 
-# ---------------- 程序入口 ----------------
+# ------------------------------------------------------------------ 入口
 if __name__ == "__main__":
-    # ✅ OpenGL设置（必须在QApplication之前）
+    # QSurfaceFormat 必须在 QApplication 之前设置
     fmt = QSurfaceFormat()
-    fmt.setVersion(3, 3)  # OpenGL 3.3
-    fmt.setProfile(QSurfaceFormat.CoreProfile)  # 核心模式
-    fmt.setSwapInterval(1)  # 垂直同步，防止撕裂
-    fmt.setDepthBufferSize(24)  # 深度缓冲区
-    fmt.setStencilBufferSize(8)  # 模板缓冲区
-    fmt.setSamples(4)  # 4x抗锯齿
+    fmt.setVersion(3, 3)
+    fmt.setProfile(QSurfaceFormat.CoreProfile)
+    fmt.setSamples(4)
+    fmt.setDepthBufferSize(24)
+    fmt.setStencilBufferSize(8)
+    fmt.setSwapInterval(1)
     QSurfaceFormat.setDefaultFormat(fmt)
 
-    logger.info("✅ OpenGL配置完成")
-
-    # 创建应用程序
     app = QApplication(sys.argv)
+    app.setFont(QFont("Microsoft YaHei", 10))
 
-    # 设置应用程序字体
-    font = QFont("Microsoft YaHei", 10)
-    app.setFont(font)
-
-    # 创建并显示主窗口
     window = MainWindow()
     window.show()
 
-    logger.info("✅ 应用程序启动成功")
-
-    # 进入事件循环
     sys.exit(app.exec())
