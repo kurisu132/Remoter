@@ -44,7 +44,13 @@ _SEND_HZ       = 50
 _SEND_INTERVAL = 1.0 / _SEND_HZ
 
 CONFIG_PATH = Path.home() / ".vlink" / "config.json"
-DEFAULT_CONFIG = {"target_ip": "192.168.1.11", "target_port": 9000}
+DEFAULT_CONFIG = {
+    "target_ip": "192.168.1.11",
+    "target_port": 9000,
+    "camera_host": "192.168.1.36",
+    "camera_user": "admin",
+    "camera_pass": "123456",
+}
 
 
 def load_config() -> dict:

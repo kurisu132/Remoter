@@ -1,7 +1,6 @@
 import logging
 import subprocess as sp
 import shutil
-import numpy as np
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtGui import QImage
 
@@ -87,68 +86,56 @@ class FFmpegRTSPPlayer(QThread):
                 logger.info(f"🧵 多线程解码: 4 线程 (slice 级并行)")
                 logger.info(f"💡 提示：摄像头应配置为 2592x1904@15-20fps，码率 6000-8000Kbps")
 
-            # 启动FFmpeg子进程
             self._process = sp.Popen(
                 ffmpeg_cmd,
                 stdout=sp.PIPE,
                 stderr=sp.PIPE,
-                bufsize=self.width * self.height * 3  # 缓冲区 = 1帧大小
+                bufsize=-1,
             )
 
-            frame_size = self.width * self.height * 3  # 每帧字节数（RGB24）
+            # 尽量增大 OS 管道缓冲（Linux 专用），减少 FFmpeg 因写端阻塞而退出
+            try:
+                import fcntl
+                F_SETPIPE_SZ = 1031
+                fcntl.fcntl(self._process.stdout.fileno(), F_SETPIPE_SZ, 4 * 1024 * 1024)
+                logger.info("pipe buffer set to 4 MB")
+            except Exception:
+                pass  # Windows / 非 root 时静默跳过
+
+            frame_size = self.width * self.height * 3
             frame_count = 0
 
-            logger.info("✅ FFmpeg 进程已启动，开始接收视频流...")
+            logger.info("FFmpeg process started")
 
             while self._is_running:
-                # 读取一帧数据
                 frame_data = self._process.stdout.read(frame_size)
+
                 if not frame_data:
-                    logger.error("❌ 未接收到数据")
-                    # 读取错误信息
-                    if self._process.stderr:
+                    # 主动停止时管道关闭属正常，非主动停止才报错
+                    if self._is_running:
                         try:
-                            error_msg = self._process.stderr.read(1024).decode('utf-8', errors='ignore')
-                            if error_msg:
-                                logger.error(f"FFmpeg 错误: {error_msg}")
-                                self.error_occurred.emit(error_msg)
-                        except Exception as e:
-                            logger.error(f"读取错误信息失败: {e}")
+                            err = self._process.stderr.read(2048).decode("utf-8", errors="ignore")
+                        except Exception:
+                            err = ""
+                        msg = f"FFmpeg exited unexpectedly. {err.strip()}"
+                        logger.error(msg)
+                        self.error_occurred.emit(msg)
                     break
 
-                # ✅ 日志优化：只在首次接收和特殊情况下记录
-                if frame_count == 0:
-                    logger.info(f"✅ 首次接收到 5MP 帧数据（{len(frame_data)} 字节）")
-
-                # 检查数据完整性
                 if len(frame_data) != frame_size:
-                    logger.warning(f"⚠️ 数据不完整: 期望 {frame_size} 字节，实际 {len(frame_data)} 字节")
+                    logger.warning(f"incomplete frame: got {len(frame_data)}/{frame_size} bytes, skipping")
                     continue
 
-                try:
-                    # 转换为numpy数组（零拷贝）
-                    frame_array = np.frombuffer(frame_data, dtype=np.uint8)
-                    frame_array = frame_array.reshape((self.height, self.width, 3))
+                if frame_count == 0:
+                    logger.info(f"first frame received ({frame_size} bytes)")
 
-                    # 转换为QImage（内存安全）
-                    q_image = QImage(
-                        frame_array.data,
-                        self.width,
-                        self.height,
-                        self.width * 3,
-                        QImage.Format_RGB888
-                    )
-
-                    # ✅ 关键修复：深拷贝防止崩溃
-                    q_image = q_image.copy()
-
-                    # 发射信号到UI线程
-                    self.frame_updated.emit(q_image)
-                    frame_count += 1
-
-                except ValueError as e:
-                    logger.error(f"❌ 数据格式错误: {e}")
-                    continue
+                # bytes → QImage，deep copy 保证内存安全
+                q_image = QImage(
+                    frame_data, self.width, self.height,
+                    self.width * 3, QImage.Format.Format_RGB888,
+                ).copy()
+                self.frame_updated.emit(q_image)
+                frame_count += 1
 
         except Exception as e:
             logger.error(f"❌ FFmpeg 拉流异常: {e}", exc_info=True)
