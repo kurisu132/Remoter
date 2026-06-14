@@ -39,10 +39,10 @@ from stream.udp_control_sender import UDPControlSender, load_config
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MainWindow")
 
-RTSP_URL   = "rtsp://192.168.1.36:554/ch01.264"
-FRAME_W    = 2592
-FRAME_H    = 1904
-STM32_PORT = "/dev/ttyACM0"
+RTSP_URL  = "rtsp://192.168.1.36:554/ch01.264"
+TEST_URL  = "test://offline"
+FRAME_W   = 2592
+FRAME_H   = 1904
 
 _GREEN = "color: #00cc44; font-size: 16px;"
 _RED   = "color: #ff3333; font-size: 16px;"
@@ -59,16 +59,18 @@ _BTN_LIGHT_OFF = "background:#444444; color:#fff; border:none; border-radius:4px
 
 
 class MainWindow(QWidget):
-    def __init__(self):
+    def __init__(self, test_mode: bool = False):
         super().__init__()
+        self._test_mode = test_mode
         self._build_ui()
         self._start_rtsp()
         self._start_udp_sender()
         self._start_stm32()
         self._start_camera_clients()
         self.resize(1280, 800)
-        self.setWindowTitle("VLink 监控终端")
-        logger.info("MainWindow initialized")
+        title = "VLink 监控终端" + (" [离线测试源]" if test_mode else "")
+        self.setWindowTitle(title)
+        logger.info("MainWindow initialized" + (" [test mode]" if test_mode else ""))
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
@@ -207,15 +209,17 @@ class MainWindow(QWidget):
 
     # ------------------------------------------------------------------ RTSP
     def _start_rtsp(self):
-        self.rtsp_player = FFmpegRTSPPlayer(RTSP_URL, FRAME_W, FRAME_H)
+        url = TEST_URL if self._test_mode else RTSP_URL
+        self.rtsp_player = FFmpegRTSPPlayer(url, FRAME_W, FRAME_H)
         self.rtsp_player.frame_updated.connect(self.video_widget.update_frame)
         self.rtsp_player.error_occurred.connect(self._on_video_error)
         self.rtsp_player.start()
-        logger.info(f"RTSP player started: {RTSP_URL}")
+        logger.info(f"RTSP player started: {url}")
 
     # ------------------------------------------------------------------ STM32
     def _start_stm32(self):
-        self.stm32 = STM32Reader(port=STM32_PORT)
+        port = load_config().get("stm32_port", "/dev/ttyACM0")
+        self.stm32 = STM32Reader(port=port)
         self.stm32.frame_received.connect(self._on_stm32_frame)
         self.stm32.error_occurred.connect(self._on_stm32_error)
         self.stm32.start()
@@ -339,7 +343,8 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setFont(QFont("Microsoft YaHei", 10))
 
-    window = MainWindow()
+    test_mode = "--test" in sys.argv
+    window = MainWindow(test_mode=test_mode)
     window.show()
 
     sys.exit(app.exec())

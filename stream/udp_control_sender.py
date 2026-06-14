@@ -44,12 +44,18 @@ _SEND_HZ       = 50
 _SEND_INTERVAL = 1.0 / _SEND_HZ
 
 CONFIG_PATH = Path.home() / ".vlink" / "config.json"
+def _default_stm32_port() -> str:
+    import platform
+    return "COM3" if platform.system() == "Windows" else "/dev/ttyACM0"
+
+
 DEFAULT_CONFIG = {
     "target_ip": "192.168.1.11",
     "target_port": 9000,
     "camera_host": "192.168.1.36",
     "camera_user": "admin",
     "camera_pass": "123456",
+    "stm32_port": _default_stm32_port(),
 }
 
 
