@@ -74,13 +74,23 @@ STM32 USB CDC (/dev/ttyACM0) 或 UART (/dev/ttyS2)
 1. QSurfaceFormat 设置（3.3 Core Profile / 4x MSAA）
 2. QApplication 创建
 3. MainWindow.__init__()
-   ├── _build_ui()         → VideoOpenGLWidget, 状态栏, IP 输入框
-   ├── _start_rtsp()       → FFmpegRTSPPlayer.start()
-   ├── _start_stm32()      → STM32Reader.start()
-   └── _start_udp_sender() → UDPControlSender.start()
+   ├── _build_ui()              → VideoOpenGLWidget, 状态指示灯, IP 输入框, 右侧控制面板
+   ├── _start_rtsp()            → FFmpegRTSPPlayer.start()
+   ├── _start_stm32()           → STM32Reader.start()（串口路径从 config 读）
+   ├── _start_udp_sender()      → UDPControlSender.start()
+   └── _start_camera_clients()  → PTZControlClient + LightControlClient（凭证从 config 读）
 ```
 
-### 3.4 关闭路径（资源释放顺序）
+### 3.4 运行时 IP 切换
+
+```
+UI"连接"按钮 → MainWindow._on_connect()
+    读取 IP 输入框文本
+    UDPControlSender.set_target(ip, port)  [threading.Lock 保护]
+        内部调用 save_config()            → 写回 ~/.vlink/config.toml
+```
+
+### 3.5 关闭路径（资源释放顺序）
 
 ```
 closeEvent
@@ -151,3 +161,22 @@ sudo usermod -aG dialout $USER   # 重新登录生效
 
 ### PTZ 与补光灯 Session 策略不一致
 `PTZControlClient` 使用持久 `requests.Session`（Keep-Alive），`LightControlClient` 每次请求创建新 Session（无状态）。
+
+### 状态指示灯（右侧面板三个圆点）
+- **RTSP**：`_on_rtsp_status(status)` 驱动；`"streaming"` → 绿，其余 → 黄
+- **STM32**：`_on_stm32_frame` 时置绿，`_on_stm32_error` 时置红
+- **UDP**：`_on_udp_error` 时置红，同时启动 2 秒单次定时器 `_refresh_udp_indicator()` 自动恢复
+
+---
+
+## 6. 配置系统
+
+配置文件：项目根目录 `config.toml`（已提交进 git）
+
+| 读取方 | 字段 |
+|---|---|
+| `_start_stm32()` | `stm32_port` |
+| `_start_camera_clients()` | `camera_host` / `camera_user` / `camera_pass` |
+| `UDPControlSender.__init__()` | `target_ip` / `target_port` |
+
+写入：UI"连接"按钮触发 `UDPControlSender.set_target()` → 内部 `save_config()`，仅更新 `target_ip`。

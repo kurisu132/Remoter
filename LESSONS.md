@@ -15,3 +15,23 @@
 - 根因：为什么会有这个落差
 - 结论/对策：下次怎么办
 - 状态：[新增] / [未验证] / [反复出现] / [已提炼→去向]
+
+---
+
+## [2026-06-15] 关窗后残留帧信号触发 GL_INVALID_OPERATION 1282
+- 预期 vs 实际：以为 `closeEvent` 释放资源后不再有 GL 调用；实际 FFmpeg 线程仍在发 `frame_updated`，`VideoOpenGLWidget` 收到信号后调用已失效的 GL 上下文，触发 1282 错误
+- 根因：`closeEvent` 先调用 `stop()` 等待线程退出，但帧信号在 Qt 事件队列里已排好队，线程退出后仍被主线程消费
+- 结论/对策：`closeEvent` 必须先 `disconnect` 所有帧信号，再 `stop()/wait()`，顺序不能颠倒
+- 状态：[新增]
+
+## [2026-06-15] 阻塞对话框在 OrangePi 上卡死 Qt 事件循环
+- 预期 vs 实际：以为连接失败弹 `QMessageBox` 能正常提示用户；实际 OrangePi 上对话框阻塞事件循环，导致整个 UI 卡死，需强制杀进程
+- 根因：OrangePi 的 Qt 平台插件对模态对话框的处理与 x86/Windows 不同，事件泵被卡住
+- 结论/对策：连接状态改为非阻塞圆点指示灯 + 后台自动重连（`_RETRY_DELAY` 秒），永远不用 `QMessageBox` 阻塞主线程
+- 状态：[新增]
+
+## [2026-06-15] 硬编码串口路径跨平台失效
+- 预期 vs 实际：以为 `/dev/ttyACM0` 在开发机（Windows）和 OrangePi（Linux）都能用；实际 Windows 串口为 `COMx`，路径格式完全不同
+- 根因：串口路径是平台相关字符串，直接写死在代码里无法跨平台
+- 结论/对策：串口路径移入 `~/.vlink/config.json`（`stm32_port` 字段），代码只读 config，不再硬编码；Windows 改 config 即可，无需改代码
+- 状态：[新增]

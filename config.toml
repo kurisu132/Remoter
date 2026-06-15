@@ -1,0 +1,11 @@
+# 工控机 UDP 目标地址；UI 中「连接」按钮会写回 target_ip
+target_ip   = "192.168.1.11"
+target_port = 9000
+
+# 摄像头连接信息（出厂默认密码，非敏感）
+camera_host = "192.168.1.36"
+camera_user = "admin"
+camera_pass = "123456"
+
+# 串口路径：Linux /dev/ttyACM0，Windows COM3
+stm32_port  = "/dev/ttyACM0"

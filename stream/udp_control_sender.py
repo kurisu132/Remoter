@@ -20,17 +20,23 @@ REMOTE_PROTOCOL_v1 帧格式（8 字节）：
   # 关闭时：
   sender.stop(); sender.wait(1000)
 
-配置文件：~/.vlink/config.json
-  { "target_ip": "192.168.1.11", "target_port": 9000 }
+配置文件：项目根目录 config.toml
+  target_ip   = "192.168.1.11"
+  target_port = 9000
 """
-import json
 import logging
+import re
 import socket
 import struct
 import threading
 import time
 from pathlib import Path
 from typing import Optional
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore[no-redef]
 
 from PySide6.QtCore import QThread, Signal
 
@@ -43,37 +49,44 @@ _CMD_MOTION    = 0x10
 _SEND_HZ       = 50
 _SEND_INTERVAL = 1.0 / _SEND_HZ
 
-CONFIG_PATH = Path.home() / ".vlink" / "config.json"
-def _default_stm32_port() -> str:
-    import platform
-    return "COM3" if platform.system() == "Windows" else "/dev/ttyACM0"
+CONFIG_PATH = Path(__file__).parent.parent / "config.toml"
 
+_DEFAULT_TOML = """\
+# 工控机 UDP 目标地址；UI 中「连接」按钮会写回 target_ip
+target_ip   = "192.168.1.11"
+target_port = 9000
 
-DEFAULT_CONFIG = {
-    "target_ip": "192.168.1.11",
-    "target_port": 9000,
-    "camera_host": "192.168.1.36",
-    "camera_user": "admin",
-    "camera_pass": "123456",
-    "stm32_port": _default_stm32_port(),
-}
+# 摄像头连接信息（出厂默认密码，非敏感）
+camera_host = "192.168.1.36"
+camera_user = "admin"
+camera_pass = "123456"
+
+# 串口路径：Linux /dev/ttyACM0，Windows COM3
+stm32_port  = "/dev/ttyACM0"
+"""
 
 
 def load_config() -> dict:
-    """读取配置文件，不存在时写入默认值并返回"""
-    if CONFIG_PATH.exists():
-        try:
-            return json.loads(CONFIG_PATH.read_text())
-        except Exception as e:
-            logger.warning(f"config read error, using default: {e}")
-    save_config(DEFAULT_CONFIG)
-    return DEFAULT_CONFIG.copy()
+    """读取 config.toml，不存在时写入默认值并返回"""
+    if not CONFIG_PATH.exists():
+        CONFIG_PATH.write_text(_DEFAULT_TOML, encoding="utf-8")
+        logger.info("config.toml created with defaults")
+    try:
+        return tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"config read error, using defaults: {e}")
+        return tomllib.loads(_DEFAULT_TOML)
 
 
-def save_config(cfg: dict) -> None:
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
-    logger.info(f"config saved: {cfg}")
+def _set_toml_value(content: str, key: str, value) -> str:
+    """替换 TOML 顶层键的值，保留注释和格式"""
+    if isinstance(value, str):
+        pattern = rf'^({re.escape(key)}\s*=\s*)"[^"]*"'
+        replacement = rf'\1"{value}"'
+    else:
+        pattern = rf'^({re.escape(key)}\s*=\s*)\S+'
+        replacement = rf'\1{value}'
+    return re.sub(pattern, replacement, content, flags=re.MULTILINE)
 
 
 def build_udp_frame(left: int, right: int, flags: int) -> bytes:
@@ -128,10 +141,16 @@ class UDPControlSender(QThread):
             self._flags = frame.flags
 
     def set_target(self, ip: str, port: int = 9000) -> None:
-        """运行时更换目标地址（UI 中修改 IP 后调用）"""
+        """运行时更换目标地址（UI 中修改 IP 后调用），写回 config.toml 保留注释"""
         self._ip   = ip
         self._port = port
-        save_config({"target_ip": ip, "target_port": port})
+        try:
+            content = CONFIG_PATH.read_text(encoding="utf-8")
+            content = _set_toml_value(content, "target_ip", ip)
+            content = _set_toml_value(content, "target_port", port)
+            CONFIG_PATH.write_text(content, encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"config write error: {e}")
         logger.info(f"target updated: {ip}:{port}")
 
     @property

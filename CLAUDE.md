@@ -41,11 +41,37 @@ sudo apt install ffmpeg
 
 ---
 
+## 配置文件
+
+项目根目录的 `config.toml`（已提交进 git，直接编辑即可）：
+
+```toml
+# 工控机 UDP 目标地址；UI 中「连接」按钮会写回 target_ip
+target_ip   = "192.168.1.11"
+target_port = 9000
+
+# 摄像头连接信息（出厂默认密码，非敏感）
+camera_host = "192.168.1.36"
+camera_user = "admin"
+camera_pass = "123456"
+
+# 串口路径：Linux /dev/ttyACM0，Windows COM3
+stm32_port  = "/dev/ttyACM0"
+```
+
+- `stm32_port`：串口路径；Windows 改为 `"COM3"`（或实际端口号），无需改代码
+- `target_ip`：工控机 UDP 目标 IP；UI 中"连接"按钮也会写回此字段
+
+---
+
 ## 运行应用
 
 ```bash
 # 方式 A：通过 uv run（推荐，自动使用 .venv）
 uv run python -m gui.main_window
+
+# 离线模式（无需摄像头，FFmpeg 内置测试图案）
+uv run python -m gui.main_window --test
 
 # 方式 B：激活虚拟环境后直接运行
 source .venv/bin/activate
