@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -44,9 +43,10 @@ TEST_URL  = "test://offline"
 FRAME_W   = 2592
 FRAME_H   = 1904
 
-_GREEN = "color: #00cc44; font-size: 16px;"
-_RED   = "color: #ff3333; font-size: 16px;"
-_GRAY  = "color: #888888; font-size: 16px;"
+_GREEN  = "color: #00cc44; font-size: 16px;"
+_RED    = "color: #ff3333; font-size: 16px;"
+_GRAY   = "color: #888888; font-size: 16px;"
+_YELLOW = "color: #ffaa00; font-size: 16px;"
 
 _BTN_STYLE = (
     "QPushButton { background:#2a2a2a; color:#ffffff; border:1px solid #555;"
@@ -99,11 +99,13 @@ class MainWindow(QWidget):
         h.setContentsMargins(12, 0, 12, 0)
         h.setSpacing(20)
 
+        self._lbl_rtsp   = self._dot_label("RTSP")
         self._lbl_stm32  = self._dot_label("STM32")
         self._lbl_udp    = self._dot_label("UDP")
         self._lbl_estop  = self._dot_label("ESTOP")
         self._lbl_remote = self._dot_label("REMOTE")
-        for w in (self._lbl_stm32, self._lbl_udp, self._lbl_estop, self._lbl_remote):
+        for w in (self._lbl_rtsp, self._lbl_stm32, self._lbl_udp,
+                  self._lbl_estop, self._lbl_remote):
             h.addWidget(w)
 
         h.addStretch()
@@ -213,6 +215,7 @@ class MainWindow(QWidget):
         self.rtsp_player = FFmpegRTSPPlayer(url, FRAME_W, FRAME_H)
         self.rtsp_player.frame_updated.connect(self.video_widget.update_frame)
         self.rtsp_player.error_occurred.connect(self._on_video_error)
+        self.rtsp_player.status_changed.connect(self._on_rtsp_status)
         self.rtsp_player.start()
         logger.info(f"RTSP player started: {url}")
 
@@ -290,9 +293,21 @@ class MainWindow(QWidget):
         self._run_in_thread(self._light.turn_light_off)
 
     # ------------------------------------------------------------------ 事件
+    def _on_rtsp_status(self, status: str):
+        if status == "streaming":
+            self._lbl_rtsp.setStyleSheet(_GREEN)
+            self._lbl_rtsp.setText("● RTSP")
+        elif status in ("connecting",) or status.startswith("reconnecting"):
+            self._lbl_rtsp.setStyleSheet(_YELLOW)
+            self._lbl_rtsp.setText(f"◌ {status}")
+        else:  # stopped
+            self._lbl_rtsp.setStyleSheet(_GRAY)
+            self._lbl_rtsp.setText("● RTSP")
+
     def _on_video_error(self, msg: str):
         logger.error(f"video error: {msg}")
-        QMessageBox.warning(self, "视频流错误", msg)
+        self._lbl_rtsp.setStyleSheet(_RED)
+        self._lbl_rtsp.setText("● RTSP")
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_F11:
