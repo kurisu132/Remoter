@@ -223,14 +223,10 @@ class VideoOpenGLWidget(QOpenGLWidget):
                 logger.error(f"❌ paintGL 异常: {e}", exc_info=True)
 
     def update_frame(self, q_image: QImage):
-        """
-        更新视频帧（从外部调用）
+        if self.texture_id is None:
+            return  # cleanup() 已执行，忽略队列中残留的帧信号
 
-        Args:
-            q_image: QImage 对象
-        """
         if q_image is None or q_image.isNull():
-            logger.warning("⚠️ 收到空图像，跳过")
             return
 
         try:
@@ -283,23 +279,27 @@ class VideoOpenGLWidget(QOpenGLWidget):
         try:
             self.makeCurrent()
 
-            if self.texture_id:
+            if self.texture_id is not None:
                 glDeleteTextures([self.texture_id])
+                self.texture_id = None
                 logger.info("✅ 纹理已删除")
 
-            if self.shader_program:
+            if self.shader_program is not None:
                 glDeleteProgram(self.shader_program)
+                self.shader_program = None
                 logger.info("✅ Shader 程序已删除")
 
-            if self.vbo_vertices:
+            if self.vbo_vertices is not None:
                 glDeleteBuffers(1, [self.vbo_vertices])
+                self.vbo_vertices = None
 
-            if self.vbo_tex_coords:
+            if self.vbo_tex_coords is not None:
                 glDeleteBuffers(1, [self.vbo_tex_coords])
+                self.vbo_tex_coords = None
 
-            # ✅ 删除 VAO
-            if self.vao:
+            if self.vao is not None:
                 glDeleteVertexArrays(1, [self.vao])
+                self.vao = None
                 logger.info("✅ VAO 已删除")
 
             self.doneCurrent()
