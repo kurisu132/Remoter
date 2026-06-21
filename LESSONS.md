@@ -18,6 +18,26 @@
 
 ---
 
+## [2026-06-21] 重构引入视频管道积压：bufsize 从精确帧大小改为 -1
+- 预期 vs 实际：以为 `bufsize=-1`（Python 默认）是中性改动；实际导致 Python 每次只读 8192 字节，需约 1800 次小读才能拼出一帧（14.8 MB），同时新增的 `fcntl` 将 OS 管道扩至 4 MB，允许 FFmpeg 大幅超前写入，帧在管道中持续积压，视频延迟升至 3-5 秒
+- 根因：`bufsize` 改前为 `self.width * self.height * 3`（精确 1 帧），改后为 `-1`；commit `3d29c0a`（Jun 14，"feat(ui): 右侧控制面板 + FFmpeg管道优化"）
+- 结论/对策：`Popen` 的 `bufsize` 应与单帧字节数对齐，或改为 `0`（无缓冲）；若同时使用 `fcntl` 扩管道，必须确保读取侧速度能跟上写入侧，否则两者叠加会放大积压
+- 状态：[未验证]
+
+## [2026-06-21] 重连等待用 time.sleep 在 QThread 中阻塞首帧
+- 预期 vs 实际：以为给自动重连加 5 秒等待是无害的用户体验优化；实际 `time.sleep(1)` 在 `QThread.run()` 中同步阻塞，首次连接若有任何抖动就触发，启动延迟链：连接失败（~1s）→ 等待 5s → analyzeduration（1s）≈ 7 秒才出现第一帧
+- 根因：commit `7f2dc3a`（Jun 15，"feat: RTSP 自动重连 + 状态指示灯"）新增 `for remaining in range(_RETRY_DELAY, 0, -1): time.sleep(1)`，`_RETRY_DELAY=5`
+- 结论/对策：QThread 内的等待应用 `self._stop_event.wait(timeout=1)` 替代 `time.sleep`，支持中断；重连延迟本身合理，但不能用裸 sleep 阻塞线程
+- 状态：[未验证]
+
+## [2026-06-21] PTZ 方向命令与 stop 命令的线程竞争导致持续移动
+- 预期 vs 实际：以为 pressed/released 绑定 + 各自 `threading.Thread` 能实现"按住移动、松开停止"；实际快速点击（<200ms）时 stop 线程比 move 线程更早完成 HTTP 请求，摄像头收到顺序为 STOP→PAN，停留在移动状态
+- 根因：commit `3d29c0a`（Jun 14）引入 `_run_in_thread`，每次 PTZ 调用启动全新线程，无序列化机制；PTZ HTTP 超时 200ms，两个线程在网络层竞争，stop 因请求体更小几乎必然先到
+- 结论/对策：PTZ 命令应通过单一串行队列（一个工作线程 + `queue.Queue`）发送，保证 move 入队后 stop 才能入队；或在 move 的 HTTP 完成回调后再发 stop
+- 状态：[未验证]
+
+---
+
 ## [2026-06-15] 关窗后残留帧信号触发 GL_INVALID_OPERATION 1282
 - 预期 vs 实际：以为 `closeEvent` 释放资源后不再有 GL 调用；实际 FFmpeg 线程仍在发 `frame_updated`，`VideoOpenGLWidget` 收到信号后调用已失效的 GL 上下文，触发 1282 错误
 - 根因：`closeEvent` 先调用 `stop()` 等待线程退出，但帧信号在 Qt 事件队列里已排好队，线程退出后仍被主线程消费

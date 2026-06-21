@@ -3,6 +3,7 @@ target_ip   = "192.168.1.11"
 target_port = 9000
 
 # 摄像头连接信息（出厂默认密码，非敏感）
+rtsp_url    = "rtsp://192.168.1.36:554/ch01.264"
 camera_host = "192.168.1.36"
 camera_user = "admin"
 camera_pass = "123456"

@@ -11,6 +11,7 @@ MainWindow — Phase 1 控制框架
   └───────────────────────────────────────────────┘
 """
 import logging
+import queue
 import sys
 import threading
 
@@ -211,7 +212,7 @@ class MainWindow(QWidget):
 
     # ------------------------------------------------------------------ RTSP
     def _start_rtsp(self):
-        url = TEST_URL if self._test_mode else RTSP_URL
+        url = TEST_URL if self._test_mode else load_config().get("rtsp_url", RTSP_URL)
         self.rtsp_player = FFmpegRTSPPlayer(url, FRAME_W, FRAME_H)
         self.rtsp_player.frame_updated.connect(self.video_widget.update_frame)
         self.rtsp_player.error_occurred.connect(self._on_video_error)
@@ -268,6 +269,8 @@ class MainWindow(QWidget):
         pwd  = cfg.get("camera_pass", "123456")
         self._ptz   = PTZControlClient(host=host, username=user, password=pwd)
         self._light = LightControlClient(host=host, username=user, password=pwd)
+        self._ptz_queue = queue.Queue()
+        threading.Thread(target=self._ptz_worker_loop, daemon=True).start()
         logger.info(f"camera API clients ready: {host}")
 
     def _run_in_thread(self, fn, *args, **kwargs):
@@ -275,15 +278,26 @@ class MainWindow(QWidget):
         threading.Thread(target=fn, args=args, kwargs=kwargs, daemon=True).start()
 
     # ── PTZ ──
+    def _ptz_worker_loop(self):
+        """串行处理 PTZ 命令，保证 move 先于 stop 到达摄像头"""
+        while True:
+            fn = self._ptz_queue.get()
+            if fn is None:
+                break
+            try:
+                fn()
+            except Exception as e:
+                logger.warning(f"PTZ command error: {e}")
+
     def _ptz_move(self, direction: str):
         cmd_map = {"up": self._ptz.pan_up, "down": self._ptz.pan_down,
                    "left": self._ptz.pan_left, "right": self._ptz.pan_right}
         fn = cmd_map.get(direction)
         if fn:
-            self._run_in_thread(fn)
+            self._ptz_queue.put(fn)
 
     def _ptz_stop(self):
-        self._run_in_thread(self._ptz.stop)
+        self._ptz_queue.put(self._ptz.stop)
 
     # ── 补光灯 ──
     def _on_light_on(self):
@@ -331,6 +345,8 @@ class MainWindow(QWidget):
             logger.warning("RTSP thread timeout, terminating")
             self.rtsp_player.terminate()
             self.rtsp_player.wait(500)
+
+        self._ptz_queue.put(None)
 
         self.stm32.stop()
         self.stm32.wait(1000)

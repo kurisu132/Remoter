@@ -1,7 +1,7 @@
 import logging
 import shutil
 import subprocess as sp
-import time
+import threading
 
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtGui import QImage, QPixmap
@@ -22,9 +22,10 @@ class FFmpegRTSPPlayer(QThread):
         self.rtsp_url    = rtsp_url
         self.width       = width
         self.height      = height
-        self._is_running = False
-        self._process    = None
-        self._retry      = not rtsp_url.startswith("test://")
+        self._is_running  = False
+        self._process     = None
+        self._retry       = not rtsp_url.startswith("test://")
+        self._stop_event  = threading.Event()
         self.ffmpeg_path = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
         logger.info(f"ffmpeg: {self.ffmpeg_path}")
 
@@ -56,6 +57,7 @@ class FFmpegRTSPPlayer(QThread):
     # ------------------------------------------------------------------
     def run(self):
         self._is_running = True
+        self._stop_event.clear()
         frame_size = self.width * self.height * 3
 
         while self._is_running:
@@ -67,7 +69,7 @@ class FFmpegRTSPPlayer(QThread):
                     self._build_cmd(),
                     stdout=sp.PIPE,
                     stderr=sp.PIPE,
-                    bufsize=-1,
+                    bufsize=frame_size,
                 )
                 self._try_enlarge_pipe()
 
@@ -113,7 +115,7 @@ class FFmpegRTSPPlayer(QThread):
                 if not self._is_running:
                     break
                 self.status_changed.emit(f"reconnecting ({remaining}s)")
-                time.sleep(1)
+                self._stop_event.wait(timeout=1)
 
         self.status_changed.emit("stopped")
         logger.info("player stopped")
@@ -144,6 +146,7 @@ class FFmpegRTSPPlayer(QThread):
     def stop(self):
         """发出停止信号；调用方负责 wait()"""
         self._is_running = False
+        self._stop_event.set()
         self._stop_process()
 
 

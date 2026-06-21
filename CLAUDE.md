@@ -12,6 +12,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 详细架构见 `ARCHITECTURE.md`。
 
+## 文档体系
+
+| 文件 | 用途 |
+|---|---|
+| `CLAUDE.md` | 开发指南（本文件） |
+| `ARCHITECTURE.md` | 架构详情、模块边界、数据流 |
+| `LESSONS.md` | 判断与复盘日志——发现预期与实际的落差时记录，格式见文件头模板 |
+
 ---
 
 ## 安装依赖
@@ -122,7 +130,7 @@ uv run python api/light_control.py        # 补光灯控制测试
 
 ```
 origin   → GitHub（https://github.com/kurisu132/Remoter.git）存档备份
-orangepi → OrangePi 直推（orangepi@192.168.1.10:/home/orangepi/PythonProjects/vlink）实机测试
+orangepi → OrangePi 直推（orangepi@192.168.5.10:/home/orangepi/PythonProjects/vlink）实机测试
 ```
 
 查看当前配置：
@@ -157,7 +165,7 @@ git push origin dev/phase1-refactor
 SSH 配置（`~/.ssh/config`）：
 ```
 Host orangepi
-    HostName 192.168.1.10
+    HostName 192.168.5.10
     User orangepi
     Port 22
     IdentityFile ~/.ssh/id_ed25519
@@ -165,8 +173,8 @@ Host orangepi
     ServerAliveCountMax 3
 ```
 
-OrangePi IP：192.168.1.10（eth0 静态 IP，直连网线）  
-开发机 IP：192.168.1.12
+OrangePi IP：192.168.5.10（eth0 静态 IP，直连网线）  
+开发机 IP：192.168.5.12
 
 连接方式：VS Code → Ctrl+Shift+P → "Remote-SSH: Connect to Host..." → 选择 `orangepi`
 
@@ -180,7 +188,7 @@ git init
 git config receive.denyCurrentBranch updateInstead
 
 # Windows 上添加 remote（仅首次）
-git remote add orangepi orangepi@192.168.1.10:/home/orangepi/PythonProjects/vlink
+git remote add orangepi orangepi@192.168.5.10:/home/orangepi/PythonProjects/vlink
 ```
 
 ---
