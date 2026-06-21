@@ -1,0 +1,24 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "VLink (正常模式)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "gui.main_window",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "VLink (离线测试源)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "gui.main_window",
+            "args": ["--test"],
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "console": "integratedTerminal"
+        }
+    ]
+}

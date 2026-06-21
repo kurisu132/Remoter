@@ -10,9 +10,12 @@ MainWindow — Phase 1 控制框架
   │ STM32:● UDP:● ESTOP:○ REMOTE:○  IP:[___] [连接] │
   └───────────────────────────────────────────────┘
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import logging
 import queue
-import sys
 import threading
 
 from PySide6.QtCore import Qt, QTimer
@@ -361,7 +364,7 @@ class MainWindow(QWidget):
 
 
 # ------------------------------------------------------------------ 入口
-if __name__ == "__main__":
+def _run(test_mode: bool = False):
     fmt = QSurfaceFormat()
     fmt.setVersion(3, 3)
     fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
@@ -374,8 +377,19 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setFont(QFont("Microsoft YaHei", 10))
 
-    test_mode = "--test" in sys.argv
     window = MainWindow(test_mode=test_mode)
     window.show()
 
     sys.exit(app.exec())
+
+
+def main():
+    _run(test_mode=False)
+
+
+def main_test():
+    _run(test_mode=True)
+
+
+if __name__ == "__main__":
+    _run(test_mode="--test" in sys.argv)
