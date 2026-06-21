@@ -109,7 +109,8 @@ uv run python api/light_control.py        # 补光灯控制测试
 
 | 文件 | 类 | 职责 |
 |---|---|---|
-| `gui/main_window.py` | `MainWindow` | 应用入口，代码布局，生命周期管理 |
+| `gui/main_window.py` | `MainWindow` | 应用入口，RTSP/STM32/UDP/PTZ/补光灯 生命周期管理 |
+| `ui/window_ui.py` | `WindowUI` | 纯 UI 布局——widget 创建、样式表、信号连接 |
 | `gui/video_opengl_widget.py` | `VideoOpenGLWidget` | OpenGL 渲染，双模 GLSL 着色器 |
 | `stream/ffmpeg_player.py` | `FFmpegRTSPPlayer` | FFmpeg 子进程，帧读取，QImage 信号 |
 | `stream/stm32_reader.py` | `STM32Reader` / `ControlFrame` | STM32 串口帧解析 |
@@ -123,6 +124,48 @@ uv run python api/light_control.py        # 补光灯控制测试
 ---
 
 ## 开发工作流
+
+### 提交规范
+
+遵循 Conventional Commits 格式：
+
+```
+<type>: <简短描述>
+
+<详细说明（可选）>
+```
+
+**类型标识必须与改动内容一一对应，禁止一个标识内混杂多类改动：**
+
+| 标识 | 仅限包含 | 禁止混入 |
+|---|---|---|
+| `feat` | 新功能、新模块、新接口 | 重构、修 bug、改文档 |
+| `fix` | bug 修复、回归修正 | 新功能、重构、文档 |
+| `refactor` | 结构调整、重命名、拆分/合并文件（不改变外部行为） | bug 修复、新功能、文档 |
+| `style` | 格式化、缩进、样式表调整（不影响逻辑） | 布局/组件增删（属于 refactor）、bug 修复 |
+| `docs` | README、CLAUDE.md、注释、ARCHITECTURE.md | 代码变动、配置调整 |
+| `chore` | 构建脚本、依赖版本、`.gitignore`、CI 配置 | 源码变动 |
+| `test` | 测试代码、测试配置 | 被测代码的功能改动 |
+
+**示例：**
+
+```bash
+# ✅ 正确：修复只有一个改动类型
+git commit -m "fix: 关窗后残留帧信号触发 GL_INVALID_OPERATION 1282"
+
+# ❌ 错误：fix 里混杂了新模块和文档
+git commit -m "fix: 修复 RTSP 断连并添加自动重连模块和更新文档"
+#                                          ^^^^^^^^^^^^^^   ^^^^^^^^
+#                                          feat → 应单独提交   docs → 应单独提交
+```
+
+**正确的做法是把不同类的改动拆成多个原子提交：**
+
+```bash
+git commit -m "fix: RTSP 断连后连接状态未重置"
+git commit -m "feat: FFmpegRTSPPlayer 断连自动重连"
+git commit -m "docs: CLAUDE.md 补充重连行为说明"
+```
 
 ### Git Remote 配置
 
