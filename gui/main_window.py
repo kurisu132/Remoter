@@ -15,9 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import logging
 import queue
+import signal
 import threading
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QSurfaceFormat
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -217,6 +218,12 @@ def _run(test_mode: bool = False):
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setFont(QFont("Microsoft YaHei", 10))
+
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    # 定期唤醒 Python 信号队列，否则 Qt 事件循环会阻断 SIGINT
+    _sig_timer = QTimer()
+    _sig_timer.start(200)
+    _sig_timer.timeout.connect(lambda: None)
 
     window = MainWindow(test_mode=test_mode)
     window.show()
