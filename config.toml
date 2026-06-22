@@ -9,4 +9,5 @@ camera_user = "admin"
 camera_pass = "123456"
 
 # 串口路径：Linux /dev/ttyACM0，Windows COM3
+# 测试时（sim_stm32.py --pty）改为 /tmp/stm32_app
 stm32_port  = "/dev/ttyACM0"
