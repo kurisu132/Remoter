@@ -46,11 +46,11 @@ class FFmpegRTSPPlayer(QThread):
             ]
         return [
             self.ffmpeg_path,
-            "-rtsp_transport", "udp",               # UDP：网络层天然丢包，不积压旧帧
+            "-rtsp_transport", "tcp",
             "-fflags", "nobuffer+discardcorrupt",
             "-flags", "low_delay",
-            "-probesize", "32",
-            "-analyzeduration", "0",                # 不等分析，立即开始解码
+            "-probesize", "2048",
+            "-analyzeduration", "1000000",
             "-i", self.rtsp_url,
             "-vf", f"scale={self.width}:{self.height}:flags=fast_bilinear",
             "-sws_flags", "fast_bilinear",

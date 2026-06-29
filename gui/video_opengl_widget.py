@@ -270,7 +270,7 @@ class VideoOpenGLWidget(QOpenGLWidget):
                          GL_RGB, GL_UNSIGNED_BYTE, img_data)
             glBindTexture(GL_TEXTURE_2D, 0)
             self.doneCurrent()
-            self.update()
+            self.repaint()
         except Exception as e:
             logger.error(f"_render_pending 异常: {e}", exc_info=True)
 
