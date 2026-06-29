@@ -37,6 +37,9 @@ class FFmpegRTSPPlayer(QThread):
                 "-pix_fmt", "rgb24", "-f", "rawvideo", "-vcodec", "rawvideo",
                 "-an", "-sn", "-loglevel", "error", "-",
             ]
+        import sys
+        # OrangePi/Linux: 使用 RK3588 VPU 硬解，避免 ARM 软解速度不足导致 TCP 积压
+        hw_decoder = ["-c:v", "h264_rkmpp"] if sys.platform != "win32" else []
         return [
             self.ffmpeg_path,
             "-rtsp_transport", "tcp",
@@ -45,6 +48,7 @@ class FFmpegRTSPPlayer(QThread):
             "-max_delay", "0",
             "-probesize", "2048",
             "-analyzeduration", "100000",
+            *hw_decoder,
             "-i", self.rtsp_url,
             "-vf", f"scale={self.width}:{self.height}:flags=fast_bilinear",
             "-sws_flags", "fast_bilinear",
