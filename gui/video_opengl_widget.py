@@ -4,10 +4,8 @@ VideoOpenGLWidget - OpenGL 硬件加速视频渲染控件
 initializeGL 内通过 context().isOpenGLES() 自动选择对应 GLSL 版本，无需外部配置。
 """
 import logging
-from typing import Optional
 import numpy as np
 
-from PySide6.QtCore import QTimer
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QImage
 from OpenGL.GL import *
@@ -67,7 +65,7 @@ class VideoOpenGLWidget(QOpenGLWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._is_es = False          # 由 initializeGL 赋值，勿提前使用
+        self._is_es = False
         self.texture_id = None
         self.shader_program = None
         self.vao = None
@@ -77,15 +75,9 @@ class VideoOpenGLWidget(QOpenGLWidget):
         self.frame_count = 0
         self.frame_width = 0
         self.frame_height = 0
-        self._pending_frame: Optional[QImage] = None
-        self._render_timer = QTimer(self)
-        self._render_timer.setInterval(33)   # ~30fps
-        self._render_timer.timeout.connect(self._render_pending)
-        self._render_timer.start()
         logger.info("VideoOpenGLWidget initialized")
 
     def initializeGL(self):
-        """初始化 OpenGL 环境，自动检测 ES / Desktop 模式"""
         try:
             self._is_es = self.context().isOpenGLES()
             mode = "OpenGL ES 3.0" if self._is_es else "OpenGL 3.3 Desktop"
@@ -111,7 +103,6 @@ class VideoOpenGLWidget(QOpenGLWidget):
             logger.error(f"initializeGL failed: {e}", exc_info=True)
 
     def _compile_shaders(self):
-        """编译顶点和片段着色器，根据 ES / Desktop 自动选择 GLSL 版本"""
         vert_src = self._VERT_ES if self._is_es else self._VERT_DESKTOP
         frag_src = self._FRAG_ES if self._is_es else self._FRAG_DESKTOP
 
@@ -147,117 +138,89 @@ class VideoOpenGLWidget(QOpenGLWidget):
         return shader_program
 
     def _create_vbo(self):
-        """创建顶点缓冲对象（VBO）并绑定到 VAO"""
-        # ✅ 绑定 VAO（所有后续操作都会记录到这个 VAO）
         glBindVertexArray(self.vao)
 
-        # 顶点坐标（使用 TRIANGLE_FAN，只需4个顶点）
         vertices = np.array([
-            -1.0, -1.0,  # 左下
-             1.0, -1.0,  # 右下
-             1.0,  1.0,  # 右上
-            -1.0,  1.0   # 左上
+            -1.0, -1.0,
+             1.0, -1.0,
+             1.0,  1.0,
+            -1.0,  1.0
         ], dtype=np.float32)
 
-        # ✅ 纹理坐标 Y 轴翻转
         tex_coords = np.array([
-            0.0, 1.0,  # 左下 → QImage 左上
-            1.0, 1.0,  # 右下 → QImage 右上
-            1.0, 0.0,  # 右上 → QImage 右下
-            0.0, 0.0   # 左上 → QImage 左下
+            0.0, 1.0,
+            1.0, 1.0,
+            1.0, 0.0,
+            0.0, 0.0
         ], dtype=np.float32)
 
-        # 创建顶点 VBO
         self.vbo_vertices = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo_vertices)
         glBufferData(GL_ARRAY_BUFFER, vertices.nbytes, vertices, GL_STATIC_DRAW)
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, None)
         glEnableVertexAttribArray(0)
 
-        # 创建纹理坐标 VBO
         self.vbo_tex_coords = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo_tex_coords)
         glBufferData(GL_ARRAY_BUFFER, tex_coords.nbytes, tex_coords, GL_STATIC_DRAW)
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, None)
         glEnableVertexAttribArray(1)
 
-        # ✅ 解绑 VAO（保存所有设置）
         glBindVertexArray(0)
         glBindBuffer(GL_ARRAY_BUFFER, 0)
 
-        logger.info("✅ VBO 创建成功并绑定到 VAO")
+        logger.info("VBO created and bound to VAO")
 
     def resizeGL(self, w, h):
-        """窗口尺寸变化时调用"""
         glViewport(0, 0, w, h)
-        logger.info(f"🔄 OpenGL 视口调整: {w}x{h}")
 
     def paintGL(self):
-        """渲染函数"""
         try:
-            # 清屏
             glClear(GL_COLOR_BUFFER_BIT)
 
-            # 如果没有帧数据，跳过
             if self.current_frame is None:
                 return
 
-            # 使用着色器
             glUseProgram(self.shader_program)
-
-            # 绑定纹理
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, self.texture_id)
 
-            # 设置 uniform
             tex_location = glGetUniformLocation(self.shader_program, "videoTexture")
             glUniform1i(tex_location, 0)
 
-            # ✅ 使用 VAO（所有顶点属性已保存）
             glBindVertexArray(self.vao)
             glDrawArrays(GL_TRIANGLE_FAN, 0, 4)
             glBindVertexArray(0)
 
-            # 清理
             glBindTexture(GL_TEXTURE_2D, 0)
             glUseProgram(0)
 
             self.frame_count += 1
 
         except Exception as e:
-            # 只记录严重错误，忽略 GLError 误报
             if "GLError" not in str(type(e).__name__):
-                logger.error(f"❌ paintGL 异常: {e}", exc_info=True)
+                logger.error(f"paintGL 异常: {e}", exc_info=True)
 
     def update_frame(self, q_image: QImage):
-        """接收新帧：仅存储最新帧，覆盖未渲染的旧帧。GL 上传由定时器统一执行。"""
         if self.texture_id is None or q_image is None or q_image.isNull():
             return
-        self._pending_frame = q_image
 
-    def _render_pending(self):
-        """定时器回调（~30fps）：取最新帧做 GL 上传并触发重绘。"""
-        frame = self._pending_frame
-        if frame is None:
-            return
-        self._pending_frame = None
+        if q_image.format() != QImage.Format_RGB888:
+            q_image = q_image.convertToFormat(QImage.Format_RGB888)
 
-        if frame.format() != QImage.Format_RGB888:
-            frame = frame.convertToFormat(QImage.Format_RGB888)
-
-        if self.frame_width != frame.width() or self.frame_height != frame.height():
-            self.frame_width = frame.width()
-            self.frame_height = frame.height()
+        if self.frame_width != q_image.width() or self.frame_height != q_image.height():
+            self.frame_width = q_image.width()
+            self.frame_height = q_image.height()
             logger.info(f"视频尺寸: {self.frame_width}x{self.frame_height}")
 
-        self.current_frame = frame
+        self.current_frame = q_image
 
         try:
             self.makeCurrent()
             glBindTexture(GL_TEXTURE_2D, self.texture_id)
 
-            width, height = frame.width(), frame.height()
-            ptr = frame.constBits()
+            width, height = q_image.width(), q_image.height()
+            ptr = q_image.constBits()
             if isinstance(ptr, int):
                 import ctypes
                 buf = (ctypes.c_ubyte * (width * height * 3)).from_address(ptr)
@@ -271,24 +234,21 @@ class VideoOpenGLWidget(QOpenGLWidget):
             glBindTexture(GL_TEXTURE_2D, 0)
             self.doneCurrent()
             self.repaint()
+
         except Exception as e:
-            logger.error(f"_render_pending 异常: {e}", exc_info=True)
+            logger.error(f"update_frame 异常: {e}", exc_info=True)
 
     def cleanup(self):
-        """清理 OpenGL 资源"""
         try:
-            self._render_timer.stop()
             self.makeCurrent()
 
             if self.texture_id is not None:
                 glDeleteTextures([self.texture_id])
                 self.texture_id = None
-                logger.info("✅ 纹理已删除")
 
             if self.shader_program is not None:
                 glDeleteProgram(self.shader_program)
                 self.shader_program = None
-                logger.info("✅ Shader 程序已删除")
 
             if self.vbo_vertices is not None:
                 glDeleteBuffers(1, [self.vbo_vertices])
@@ -301,10 +261,9 @@ class VideoOpenGLWidget(QOpenGLWidget):
             if self.vao is not None:
                 glDeleteVertexArrays(1, [self.vao])
                 self.vao = None
-                logger.info("✅ VAO 已删除")
 
             self.doneCurrent()
-            logger.info("✅ OpenGL 资源清理完成")
+            logger.info("OpenGL 资源清理完成")
 
         except Exception as e:
-            logger.error(f"❌ cleanup 异常: {e}", exc_info=True)
+            logger.error(f"cleanup 异常: {e}", exc_info=True)
