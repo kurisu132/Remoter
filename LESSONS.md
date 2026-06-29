@@ -55,3 +55,33 @@
 - 根因：串口路径是平台相关字符串，直接写死在代码里无法跨平台
 - 结论/对策：串口路径移入 `~/.vlink/config.json`（`stm32_port` 字段），代码只读 config，不再硬编码；Windows 改 config 即可，无需改代码
 - 状态：[新增]
+
+---
+
+## [2026-06-29] drain 线程和 QTimer 延迟上传无法解决 TCP 管道积压
+
+- 预期 vs 实际：以为让一个 drain 线程以最快速度读取 FFmpeg stdout、主循环再以固定帧率取最新帧，能跳过积压的旧帧降低延迟；实际 drain 线程读取速度与 FFmpeg 解码速度相同（FFmpeg 写入才是瓶颈），drain 只是把阻塞从主线程挪到了辅助线程，帧仍然按 FIFO 顺序出来，无法跳过。同样，QTimer 延迟 GL 上传只增加约 33ms 延迟，没有降低端到端延迟的任何作用
+- 根因：TCP 管道是 FIFO，即使读取再快也只能消费 FFmpeg 已解码的帧；"跳帧"需要在解码之前丢弃，而不是在解码之后选择
+- 结论/对策：只需一个最简单的 `stdout.read(frame_size)` 阻塞循环，不需要 drain 线程或 QTimer；帧率不够时根因是解码速度跟不上摄像头发送速率，需从摄像头配置或硬件解码入手，不是管道读取策略
+- 状态：[新增]
+
+## [2026-06-29] OrangePi A76 软解 5MP H264 速度上限约 10fps，低于摄像头发送速率 15fps
+
+- 预期 vs 实际：以为优化 FFmpeg 参数（nobuffer、low_delay、probesize）就能把延迟降到可接受范围；实际无论参数怎么调，OrangePi 软解 2592×1904 H264 的速度上限约 10fps，而摄像头以 15fps 发送，TCP 缓冲区每秒净积压 5 帧，运行 20s 后积压达 6-7s，调参只能影响首帧延迟，无法消除积压增长
+- 根因：ARM Cortex-A76 单核算力约为 x86 Zen3 的 40-60%，x86 上软解 5MP H264 轻松 40-60fps，OrangePi 只能 10fps；这是 CPU 算力的硬性上限，FFmpeg 参数调不了
+- 结论/对策：降低摄像头分辨率（720P 软解可达 30fps）是权宜之计；根治方案是使用 RK3588 内置 VPU 硬件解码（h264_rkmpp），可将 5MP 解码耗时从 ~100ms 降至 <10ms，彻底消除积压
+- 状态：[新增]
+
+## [2026-06-29] UDP RTSP 在局域网直连下仍有丢包导致 RGB24 管道字节错位
+
+- 预期 vs 实际：以为以太网直连两台设备不会丢包，切换 UDP 传输只有延迟优势；实际偶发 UDP 丢包后 H264 解码器仍输出一帧数据（错误数据），导致 RGB24 stdout 字节流偏移，后续每一帧颜色通道全错（全绿 / 撕裂），且会持续直到 FFmpeg 重连
+- 根因：UDP 无重传，FFmpeg 用错误数据解码并写入 stdout，`stdout.read(frame_size)` 读到的字节跨越了两帧边界，没有帧边界标记无法同步
+- 结论/对策：对本应用（RGB24 裸帧管道）而言必须使用 TCP 传输，TCP 的顺序保证使字节流不会错位；若需降低延迟，靠 `-max_delay 0` 和 `-analyzeduration 100000` 压缩 FFmpeg 内部缓冲，而不是切 UDP
+- 状态：[新增]
+
+## [2026-06-29] h264_rkmpp 已内置于 OrangePi 系统 ffmpeg，无需另装
+
+- 预期 vs 实际：以为 RK3588 MPP 硬件解码需要安装 `ffmpeg-rockchip` 或从源码编译；实际 `ffmpeg -codecs | grep h264` 确认 `h264_rkmpp` 已作为解码器选项存在于 `/usr/bin/ffmpeg`，可直接用 `-c:v h264_rkmpp` 启用，`ffmpeg -hwaccels` 虽然没列出 rkmpp 但解码器本身可用
+- 根因：OrangePi 官方镜像的 ffmpeg 包已经预编译了 Rockchip MPP 支持
+- 结论/对策：硬件解码实现只需在 `_build_cmd()` 加 `-c:v h264_rkmpp`（Linux 平台），FFmpeg 遇到软件 scale 滤镜会自动插入 hwdownload + NV12 转换，无需额外处理；若出现 `Impossible to convert`，则显式写 `-vf "hwdownload,format=nv12,scale=..."` 
+- 状态：[新增]

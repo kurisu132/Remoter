@@ -43,15 +43,33 @@
 ### 3.1 视频帧渲染路径（最高频）
 
 ```
-FFmpeg 子进程 (stdout RGB24)
-  → FFmpegRTSPPlayer.run() [QThread]
-      numpy 零拷贝读取 → QImage deep copy
-  → Signal: frame_updated(QImage)  [跨线程, Qt 自动投递]
+摄像头传感器
+  → H264 编码器（相机 CPU）                [编码延迟 50-200ms，受 I 帧间隔影响]
+  → RTSP/TCP 网络传输                     [LAN 直连 <1ms]
+  → FFmpeg RTSP demux（max_delay=0）      [≈0ms]
+  → H264 解码                             [软解 5MP: ~100ms/帧；软解 720P: ~10ms/帧；
+                                           RK3588 硬解 h264_rkmpp: <10ms/帧]
+  → rawvideo stdout pipe
+  → FFmpegRTSPPlayer.run() stdout.read()  [阻塞，等 FFmpeg 完成一帧]
+      numpy 零拷贝 → QImage deep copy
+  → Signal: frame_updated(QImage)         [跨线程 QueuedConnection，<1ms]
   → VideoOpenGLWidget.update_frame()
-      glTexImage2D() 上传 GPU 纹理
-  → paintGL()
-      GLSL 着色器采样纹理 → 屏幕
+      makeCurrent + numpy + glTexImage2D  [5MP: 20-46ms；720P: 3-8ms]
+  → repaint() → paintGL()                [vsync ~16ms]
+  → 屏幕
 ```
+
+**各平台实测延迟（稳态，2026-06-29）**
+
+| 配置 | 解码帧率 | 稳定延迟 | 备注 |
+|---|---|---|---|
+| Windows x86，5MP，软解 | 40-60fps | <200ms | CPU 算力充足，不积压 |
+| OrangePi，5MP，软解 | 10-11fps | 随时间无限增长 | decode < send → TCP 积压 |
+| OrangePi，720P，软解 | ~30fps | ~500ms | 积压消失，稳定 |
+| OrangePi，5MP，h264_rkmpp（计划中） | ~15fps | 预期 200-400ms | VPU 硬解，消除 CPU 瓶颈 |
+
+**5MP 软解延迟无限增长根因**：OrangePi 软解上限 ~10fps，摄像头发 15fps，每秒净积压 5 帧。
+运行 20s → 积压 100 帧 ÷ 15fps = **6.7s 延迟**。调 FFmpeg 参数无法解决，根治需硬件解码。
 
 ### 3.2 STM32 控制路径（~50 Hz）
 
@@ -169,7 +187,56 @@ sudo usermod -aG dialout $USER   # 重新登录生效
 
 ---
 
-## 6. 配置系统
+## 6. 平台差异与性能边界
+
+### x86（Windows 开发机）vs ARM（OrangePi 5）软解对比
+
+| 指标 | Windows x86 | OrangePi ARM64 |
+|---|---|---|
+| H264 软解 5MP 帧率 | 40-60fps | **~10fps（上限）** |
+| GL texUpload 5MP | ~0ms（驱动 DMA） | 17-46ms（CPU→GPU 拷贝） |
+| GL texUpload 720P | ~0ms | 3-8ms |
+| 首帧延迟 | ~900ms | ~3500ms |
+
+OrangePi GL 上传慢的原因：Mesa Panfrost 驱动不做 DMA 零拷贝，`glTexImage2D` 需要
+CPU 将 numpy 数组（14.8MB）拷贝到 GPU 可访问内存，耗时随帧大小线性增长。
+
+### 当前 FFmpeg 命令关键参数（`stream/ffmpeg_player.py` `_build_cmd()`）
+
+```
+-rtsp_transport tcp      # UDP 丢包会造成 RGB24 字节错位花屏，必须 TCP
+-fflags nobuffer         # 禁用 FFmpeg 内部 I/O 缓冲
+-flags low_delay         # 降低解码器内部延迟
+-max_delay 0             # RTSP demuxer 最大缓冲设为 0（默认 5s）
+-probesize 2048          # 最小探测字节数（32 太激进会连接失败）
+-analyzeduration 100000  # 0.1s 流分析（原 1s），减少首帧延迟
+```
+
+Linux（OrangePi）额外加 `-c:v h264_rkmpp`（已在计划中实施）。
+
+### RK3588 硬件解码路线图
+
+**状态**：`h264_rkmpp` 已确认内置于 `/usr/bin/ffmpeg`，待实施。
+
+**实施方式**（仅改 `_build_cmd()`）：
+```python
+import sys
+hw_decoder = ["-c:v", "h264_rkmpp"] if sys.platform != "win32" else []
+# 插入 -i 之前；FFmpeg 遇到软件 scale 滤镜自动插入 hwdownload+NV12 转换
+```
+
+**预期效果**：
+- 5MP H264 解码 <10ms/帧（vs 软解 ~100ms）
+- 摄像头可恢复 5MP/15fps，TCP 积压消失
+- 稳定延迟预期 200-400ms（接近 720P 软解的 500ms，但分辨率恢复）
+
+**后续优化**（NV12 管道）：让 FFmpeg 输出 NV12（1.5B/px）而非 RGB24（3B/px），
+GL 上传量减半（7.4MB vs 14.8MB），需修改 `video_opengl_widget.py` 着色器
+加入 YUV→RGB 转换逻辑。
+
+---
+
+## 7. 配置系统
 
 配置文件：项目根目录 `config.toml`（已提交进 git）
 
