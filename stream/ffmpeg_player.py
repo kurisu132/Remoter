@@ -2,6 +2,7 @@ import logging
 import shutil
 import subprocess as sp
 import threading
+import time
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtGui import QImage, QPixmap
 
@@ -69,17 +70,35 @@ class FFmpegRTSPPlayer(QThread):
                 )
 
                 first = True
+                frame_count = 0
+                t_window = time.monotonic()
                 while self._is_running:
+                    t_read_start = time.monotonic()
                     raw = self._process.stdout.read(frame_size)
+                    t_read_end = time.monotonic()
+
                     if not raw:
                         break
                     if len(raw) != frame_size:
                         continue
 
+                    frame_count += 1
+                    decode_ms = (t_read_end - t_read_start) * 1000
+
                     if first:
-                        logger.info(f"streaming — first frame {frame_size} bytes")
+                        logger.info(f"streaming — first frame {frame_size} bytes, "
+                                    f"first-frame latency {decode_ms:.0f} ms")
                         self.status_changed.emit("streaming")
                         first = False
+                        t_window = t_read_end
+
+                    # 每 30 帧报一次实际帧率和单帧解码耗时
+                    if frame_count % 30 == 0:
+                        elapsed = t_read_end - t_window
+                        fps = 30 / elapsed if elapsed > 0 else 0
+                        logger.info(f"[perf] decoded {frame_count} frames  "
+                                    f"fps={fps:.1f}  last_decode={decode_ms:.0f}ms")
+                        t_window = t_read_end
 
                     q_image = QImage(
                         raw, self.width, self.height,

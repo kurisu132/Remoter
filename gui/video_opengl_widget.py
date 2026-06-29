@@ -4,6 +4,7 @@ VideoOpenGLWidget - OpenGL 硬件加速视频渲染控件
 initializeGL 内通过 context().isOpenGLES() 自动选择对应 GLSL 版本，无需外部配置。
 """
 import logging
+import time
 import numpy as np
 
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
@@ -73,6 +74,7 @@ class VideoOpenGLWidget(QOpenGLWidget):
         self.vbo_tex_coords = None
         self.current_frame = None
         self.frame_count = 0
+        self._upload_count = 0
         self.frame_width = 0
         self.frame_height = 0
         logger.info("VideoOpenGLWidget initialized")
@@ -216,7 +218,10 @@ class VideoOpenGLWidget(QOpenGLWidget):
         self.current_frame = q_image
 
         try:
+            t0 = time.monotonic()
             self.makeCurrent()
+            t1 = time.monotonic()
+
             glBindTexture(GL_TEXTURE_2D, self.texture_id)
 
             width, height = q_image.width(), q_image.height()
@@ -229,10 +234,24 @@ class VideoOpenGLWidget(QOpenGLWidget):
                 img_data = np.frombuffer(ptr, dtype=np.uint8, count=width * height * 3).copy()
 
             img_data = img_data.reshape((height, width, 3))
+            t2 = time.monotonic()
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0,
                          GL_RGB, GL_UNSIGNED_BYTE, img_data)
+            t3 = time.monotonic()
+
             glBindTexture(GL_TEXTURE_2D, 0)
             self.doneCurrent()
+
+            self._upload_count += 1
+            if self._upload_count % 30 == 0:
+                logger.info(
+                    f"[gl] upload={self._upload_count}  "
+                    f"makeCurrent={( t1-t0)*1000:.1f}ms  "
+                    f"numpy={(t2-t1)*1000:.1f}ms  "
+                    f"texUpload={(t3-t2)*1000:.1f}ms  "
+                    f"total={(t3-t0)*1000:.1f}ms"
+                )
+
             self.repaint()
 
         except Exception as e:

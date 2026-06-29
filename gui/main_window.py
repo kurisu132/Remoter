@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import datetime
 import logging
 import queue
 import signal
@@ -212,8 +213,38 @@ class MainWindow(QWidget):
         event.accept()
 
 
+# ────────────────────────────────────────────────────────────────── 日志
+def _setup_logging() -> Path:
+    """同时输出到控制台和带时间戳的日志文件，返回日志文件路径。"""
+    log_dir = Path(__file__).resolve().parent.parent / "logs"
+    log_dir.mkdir(exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = log_dir / f"vlink_{ts}.log"
+
+    fmt = logging.Formatter(
+        "%(asctime)s.%(msecs)03d  %(levelname)-5s  %(name)s  %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    # 控制台
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setFormatter(fmt)
+    root.addHandler(ch)
+
+    # 文件
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+
+    logging.getLogger("vlink").info(f"log → {log_path}")
+    return log_path
+
+
 # ────────────────────────────────────────────────────────────────── 入口
 def _run(test_mode: bool = False):
+    log_path = _setup_logging()
     fmt = QSurfaceFormat()
     fmt.setVersion(3, 3)
     fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
