@@ -43,6 +43,7 @@ uv run python test/sim_target.py --port 9000 --bind 0.0.0.0
 
 ```toml
 stm32_port = "/tmp/stm32_app"
+target_ip  = "127.0.0.1"        # 本机测试改为 loopback，实机部署改回 192.168.1.11
 ```
 
 ### 启动
