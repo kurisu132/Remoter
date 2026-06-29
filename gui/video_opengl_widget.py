@@ -4,8 +4,10 @@ VideoOpenGLWidget - OpenGL 硬件加速视频渲染控件
 initializeGL 内通过 context().isOpenGLES() 自动选择对应 GLSL 版本，无需外部配置。
 """
 import logging
+from typing import Optional
 import numpy as np
 
+from PySide6.QtCore import QTimer
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtGui import QImage
 from OpenGL.GL import *
@@ -75,6 +77,11 @@ class VideoOpenGLWidget(QOpenGLWidget):
         self.frame_count = 0
         self.frame_width = 0
         self.frame_height = 0
+        self._pending_frame: Optional[QImage] = None
+        self._render_timer = QTimer(self)
+        self._render_timer.setInterval(33)   # ~30fps
+        self._render_timer.timeout.connect(self._render_pending)
+        self._render_timer.start()
         logger.info("VideoOpenGLWidget initialized")
 
     def initializeGL(self):
@@ -223,60 +230,54 @@ class VideoOpenGLWidget(QOpenGLWidget):
                 logger.error(f"❌ paintGL 异常: {e}", exc_info=True)
 
     def update_frame(self, q_image: QImage):
-        if self.texture_id is None:
-            return  # cleanup() 已执行，忽略队列中残留的帧信号
-
-        if q_image is None or q_image.isNull():
+        """接收新帧：仅存储最新帧，覆盖未渲染的旧帧。GL 上传由定时器统一执行。"""
+        if self.texture_id is None or q_image is None or q_image.isNull():
             return
+        self._pending_frame = q_image
+
+    def _render_pending(self):
+        """定时器回调（~30fps）：取最新帧做 GL 上传并触发重绘。"""
+        frame = self._pending_frame
+        if frame is None:
+            return
+        self._pending_frame = None
+
+        if frame.format() != QImage.Format_RGB888:
+            frame = frame.convertToFormat(QImage.Format_RGB888)
+
+        if self.frame_width != frame.width() or self.frame_height != frame.height():
+            self.frame_width = frame.width()
+            self.frame_height = frame.height()
+            logger.info(f"视频尺寸: {self.frame_width}x{self.frame_height}")
+
+        self.current_frame = frame
 
         try:
-            # 记录尺寸变化
-            if self.frame_width != q_image.width() or self.frame_height != q_image.height():
-                self.frame_width = q_image.width()
-                self.frame_height = q_image.height()
-                logger.info(f"📏 视频尺寸: {self.frame_width}x{self.frame_height}")
-
-            # 转换为 RGB888 格式
-            if q_image.format() != QImage.Format_RGB888:
-                q_image = q_image.convertToFormat(QImage.Format_RGB888)
-
-            # 保存当前帧
-            self.current_frame = q_image
-
-            # 上传纹理数据
             self.makeCurrent()
             glBindTexture(GL_TEXTURE_2D, self.texture_id)
 
-            # 使用 numpy 确保内存安全
-            width = q_image.width()
-            height = q_image.height()
-            ptr = q_image.constBits()
-
-            # 转换为 numpy 数组
+            width, height = frame.width(), frame.height()
+            ptr = frame.constBits()
             if isinstance(ptr, int):
                 import ctypes
-                buffer_size = width * height * 3
-                buffer = (ctypes.c_ubyte * buffer_size).from_address(ptr)
-                img_data = np.frombuffer(buffer, dtype=np.uint8).copy()
+                buf = (ctypes.c_ubyte * (width * height * 3)).from_address(ptr)
+                img_data = np.frombuffer(buf, dtype=np.uint8).copy()
             else:
                 img_data = np.frombuffer(ptr, dtype=np.uint8, count=width * height * 3).copy()
 
             img_data = img_data.reshape((height, width, 3))
-
-            # 上传到 GPU
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, img_data)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0,
+                         GL_RGB, GL_UNSIGNED_BYTE, img_data)
             glBindTexture(GL_TEXTURE_2D, 0)
             self.doneCurrent()
-
-            # 触发重绘
             self.update()
-
         except Exception as e:
-            logger.error(f"❌ update_frame 异常: {e}", exc_info=True)
+            logger.error(f"_render_pending 异常: {e}", exc_info=True)
 
     def cleanup(self):
         """清理 OpenGL 资源"""
         try:
+            self._render_timer.stop()
             self.makeCurrent()
 
             if self.texture_id is not None:
