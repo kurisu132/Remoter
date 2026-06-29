@@ -37,12 +37,9 @@ class FFmpegRTSPPlayer(QThread):
                 "-pix_fmt", "rgb24", "-f", "rawvideo", "-vcodec", "rawvideo",
                 "-an", "-sn", "-loglevel", "error", "-",
             ]
-        import sys
-        # Windows 防火墙易拦截 UDP；OrangePi 直连摄像头用 UDP 避免 TCP 管道积压
-        transport = "tcp" if sys.platform == "win32" else "udp"
         return [
             self.ffmpeg_path,
-            "-rtsp_transport", transport,
+            "-rtsp_transport", "tcp",
             "-fflags", "nobuffer",
             "-flags", "low_delay",
             "-max_delay", "0",
