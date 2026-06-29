@@ -167,6 +167,10 @@ class PTZControlClient:
         """停止云台所有动作（cmd=20, IsStop=1）"""
         return self.ptz_control(channel=channel, cmd=20, is_stop=1)
 
+    def stop_direction(self, direction_cmd: int, channel: int = 1) -> Tuple[bool, Union[str, Dict]]:
+        """以方向码停止云台（兼容需要同向停止的摄像头，如 cmd=21+IsStop=1 停上转）"""
+        return self.ptz_control(channel=channel, cmd=direction_cmd, is_stop=1)
+
     def pan_up(self, channel: int = 1, speed: int = 5) -> Tuple[bool, Union[str, Dict]]:
         """上转（cmd=21）"""
         return self.ptz_control(channel=channel, cmd=21, speed=speed)

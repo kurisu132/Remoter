@@ -131,7 +131,8 @@ class MainWindow(QWidget):
         pwd  = cfg.get("camera_pass", "123456")
         self._ptz   = PTZControlClient(host=host, username=user, password=pwd)
         self._light = LightControlClient(host=host, username=user, password=pwd)
-        self._ptz_queue = queue.Queue()
+        self._ptz_queue    = queue.Queue()
+        self._last_ptz_cmd = 20          # 最近一次移动命令的 cmd 码，停止时复用
         threading.Thread(target=self._ptz_worker_loop, daemon=True).start()
         logger.info(f"camera API clients ready: {host}")
 
@@ -145,19 +146,26 @@ class MainWindow(QWidget):
             if fn is None:
                 break
             try:
-                fn()
+                ok, resp = fn()
+                logger.info(f"PTZ result: ok={ok}  resp={resp}")
             except Exception as e:
                 logger.warning(f"PTZ command error: {e}")
 
+    _PTZ_CMD = {"up": 21, "down": 22, "left": 23, "right": 24}
+
     def _ptz_move(self, direction: str):
-        cmd_map = {"up": self._ptz.pan_up, "down": self._ptz.pan_down,
-                   "left": self._ptz.pan_left, "right": self._ptz.pan_right}
-        fn = cmd_map.get(direction)
+        fn_map = {"up": self._ptz.pan_up, "down": self._ptz.pan_down,
+                  "left": self._ptz.pan_left, "right": self._ptz.pan_right}
+        fn = fn_map.get(direction)
         if fn:
+            self._last_ptz_cmd = self._PTZ_CMD[direction]
+            logger.info(f"PTZ enqueue move: {direction}(cmd={self._last_ptz_cmd})  qsize={self._ptz_queue.qsize()}")
             self._ptz_queue.put(fn)
 
     def _ptz_stop(self):
-        self._ptz_queue.put(self._ptz.stop)
+        cmd = self._last_ptz_cmd
+        logger.info(f"PTZ enqueue stop(cmd={cmd})  qsize={self._ptz_queue.qsize()}")
+        self._ptz_queue.put(lambda c=cmd: self._ptz.stop_direction(c))
 
     # ── 补光灯 ──
     def _on_light_on(self):
