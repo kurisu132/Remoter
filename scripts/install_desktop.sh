@@ -17,7 +17,7 @@ Type=Application
 Name=VLink 监控
 Name[zh_CN]=VLink 监控
 Comment=RTSP Camera Monitor with PTZ Control
-Exec=$UV_BIN run --project $PROJECT_DIR python -m gui.main_window
+Exec=$UV_BIN run --directory $PROJECT_DIR python -m gui.main_window
 WorkingDirectory=$PROJECT_DIR
 Icon=camera-web
 Terminal=false
@@ -34,6 +34,8 @@ echo "✓ 应用菜单图标已安装: ~/.local/share/applications/vlink.desktop
 if [ -d "$HOME/Desktop" ]; then
     cp "$HOME/.local/share/applications/vlink.desktop" "$HOME/Desktop/vlink.desktop"
     chmod +x "$HOME/Desktop/vlink.desktop"
+    # XFCE 安全机制：.desktop 文件需标记为 trusted 才能双击执行
+    gio set "$HOME/Desktop/vlink.desktop" metadata::trusted true 2>/dev/null || true
     echo "✓ 桌面快捷方式已创建: ~/Desktop/vlink.desktop"
 fi
 
