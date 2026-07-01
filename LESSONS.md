@@ -79,6 +79,13 @@
 - 结论/对策：对本应用（RGB24 裸帧管道）而言必须使用 TCP 传输，TCP 的顺序保证使字节流不会错位；若需降低延迟，靠 `-max_delay 0` 和 `-analyzeduration 100000` 压缩 FFmpeg 内部缓冲，而不是切 UDP
 - 状态：[新增]
 
+## [2026-07-01] swscaler yuv420p→rgb24 在 ARM 无 SIMD 加速，I 帧触发时单帧耗时 100-211ms
+
+- 预期 vs 实际：以为 h264_rkmpp 解码后直接输出 rgb24，性能表现稳定；实际 FFmpeg 在部分场景（PTZ 移动后的画面变化）自动插入 swscaler 做 yuv420p→rgb24 色彩转换，且 ARM 上 swscaler 无 SIMD 加速（日志警告 "No accelerated colorspace conversion found from yuv420p to rgb24"），导致 I 帧耗时 100-211ms，每次 PTZ 后可见 "冻帧"
+- 根因：h264_rkmpp 输出 drm_prime/NV12 → FFmpeg 自动 hwdownload 到 yuv420p → swscaler 软件转换到 rgb24；静止场景无 I 帧时不明显，PTZ 移动产生 I 帧时触发
+- 结论/对策：要求 FFmpeg 输出 NV12（硬件原生格式），跳过 swscaler；OpenGL Shader 做 YUV→RGB（GPU 完成，无卡顿）；信号接口 frame_updated 从 Signal(QImage) 改为 Signal(bytes, int, int)
+- 状态：[新增]
+
 ## [2026-07-01] h264_rkmpp + stderr=PIPE 导致卡死的根因是管道死锁，不是硬件解码不兼容
 
 - 预期 vs 实际：以为 OrangePi 卡死是 h264_rkmpp 硬件解码路径不通（格式转换失败、hwdownload 不兼容等）；实际根因是 stderr 管道满导致的经典 subprocess 死锁：FFmpeg 写大量错误到 stderr → 64KB pipe 缓冲区写满 → FFmpeg 阻塞在 write() → Python 阻塞在 stdout.read() → 双方永久等待

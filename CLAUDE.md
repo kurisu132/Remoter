@@ -112,7 +112,7 @@ uv run python api/light_control.py        # 补光灯控制测试
 | `gui/main_window.py` | `MainWindow` | 应用入口，RTSP/STM32/UDP/PTZ/补光灯 生命周期管理 |
 | `ui/window_ui.py` | `WindowUI` | 纯 UI 布局——widget 创建、样式表、信号连接 |
 | `gui/video_opengl_widget.py` | `VideoOpenGLWidget` | OpenGL 渲染，双模 GLSL 着色器 |
-| `stream/ffmpeg_player.py` | `FFmpegRTSPPlayer` | FFmpeg 子进程，帧读取，QImage 信号 |
+| `stream/ffmpeg_player.py` | `FFmpegRTSPPlayer` | FFmpeg 子进程，NV12 帧读取，Signal(bytes,int,int) |
 | `stream/stm32_reader.py` | `STM32Reader` / `ControlFrame` | STM32 串口帧解析 |
 | `stream/udp_control_sender.py` | `UDPControlSender` | REMOTE_PROTOCOL_v1 UDP 发送 |
 | `api/ptz_control.py` | `PTZControlClient` | PTZ 云台 HTTP 控制 |
@@ -243,10 +243,12 @@ git remote add orangepi orangepi@192.168.5.249:/home/orangepi/PythonProjects/vli
 
 | 参数 / 位置 | 值 | 禁止改动的原因 |
 |---|---|---|
-| `stream/ffmpeg_player.py` — `bufsize` | `frame_size`（`width×height×3`） | 背压机制，防止帧在 pipe 中堆积；改为 `-1` 会导致延迟从 ~500ms 线性增长到数秒 |
-| `_build_cmd()` — `-rtsp_transport` | `tcp` | UDP 丢包会造成 RGB24 字节流错位，全绿花屏无法恢复，只能用 TCP |
+| `stream/ffmpeg_player.py` — `bufsize` | `frame_size`（`width×height×3//2`，NV12） | 背压机制，防止帧在 pipe 中堆积；改为 `-1` 会导致延迟从 ~500ms 线性增长到数秒 |
+| `_build_cmd()` — `-rtsp_transport` | `tcp` | UDP 丢包会造成 NV12 字节流错位，花屏无法恢复，只能用 TCP |
 | `_build_cmd()` — `-max_delay` | `0` | 消除 FFmpeg RTSP 解复用器默认 5 秒内部缓冲 |
-| `_build_cmd()` — `-c:v h264_rkmpp` | Linux 上启用 | 香橙派 5MP 软解仅 10fps，低于摄像头 15fps，只有硬解才能消除积压 |
+| `_build_cmd()` — `-c:v h264_rkmpp` | Linux 上启用 | 香橙派 5MP 软解仅 10fps，低于摄像头帧率，只有硬解才能消除积压 |
+| `_build_cmd()` — `-pix_fmt nv12` | 必须保持 NV12 | 切回 rgb24 会触发 swscaler，ARM 无 SIMD 加速，I 帧耗时 100-200ms（2026-07 已验证） |
+| `stderr=sp.PIPE` + `_drain_stderr()` 线程 | 必须同时存在 | 无 drain 线程则 64KB stderr 管道写满后 FFmpeg/Python 双向死锁（2026-07 已验证） |
 
 新增 FFmpeg 参数前，先查 `LESSONS.md` 确认该方向是否已尝试过。
 
