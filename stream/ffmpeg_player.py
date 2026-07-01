@@ -41,13 +41,9 @@ class FFmpegRTSPPlayer(QThread):
         # OrangePi/Linux: 使用 RK3588 VPU 硬解，避免 ARM 软解速度不足导致 TCP 积压
         use_hw = sys.platform != "win32"
         hw_decoder = ["-c:v", "h264_rkmpp"] if use_hw else []
-        # h264_rkmpp 输出帧在硬件内存(NV12)，必须显式 hwdownload 后才能接软件 scale/pix_fmt
-        # 否则前几帧格式未初始化，出现绿色/灰色撕裂花屏
-        vf = (
-            f"hwdownload,format=nv12,scale={self.width}:{self.height}:flags=fast_bilinear"
-            if use_hw else
-            f"scale={self.width}:{self.height}:flags=fast_bilinear"
-        )
+        # FFmpeg 遇到软件 scale 滤镜会自动插入 hwdownload+NV12 转换，无需显式写
+        # （显式 hwdownload 在此版本 OrangePi FFmpeg + h264_rkmpp 上会导致连接失败）
+        vf = f"scale={self.width}:{self.height}:flags=fast_bilinear"
         return [
             self.ffmpeg_path,
             "-rtsp_transport", "tcp",
