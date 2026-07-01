@@ -46,11 +46,11 @@ if __name__ == "__main__":
 
     frame_count = [0]
 
-    def on_frame(q_image):
+    def on_frame(data, w, h):
         frame_count[0] += 1
         if frame_count[0] % 30 == 0:
             print(f"received {frame_count[0]} frames")
-        video_widget.update_frame(q_image)
+        video_widget.update_frame(data, w, h)
 
     player.frame_updated.connect(on_frame)
     player.error_occurred.connect(lambda msg: print(f"error: {msg}"))

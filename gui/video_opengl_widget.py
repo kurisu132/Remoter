@@ -1,5 +1,10 @@
 """
 VideoOpenGLWidget - OpenGL 硬件加速视频渲染控件
+
+输入格式：NV12（YUV 4:2:0，h264_rkmpp 硬件解码原生格式）
+渲染方式：Y 平面 + UV 平面分别上传为两个纹理，GLSL Shader 做 BT.601 YUV→RGB 转换。
+好处：跳过 swscaler，消除 I 帧 100-200ms 卡顿；管道数据量减半（7.4 MB vs 14.8 MB）。
+
 支持 OpenGL 3.3 Core Profile（x86/桌面）和 OpenGL ES 3.0（ARM/Mali-G610）双模式。
 initializeGL 内通过 context().isOpenGLES() 自动选择对应 GLSL 版本，无需外部配置。
 """
@@ -8,7 +13,6 @@ import time
 import numpy as np
 
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtGui import QImage
 from OpenGL.GL import *
 
 import OpenGL
@@ -36,9 +40,16 @@ class VideoOpenGLWidget(QOpenGLWidget):
     #version 330 core
     in vec2 vTexCoord;
     out vec4 fragColor;
-    uniform sampler2D videoTexture;
+    uniform sampler2D yTexture;
+    uniform sampler2D uvTexture;
     void main() {
-        fragColor = texture(videoTexture, vTexCoord);
+        float y  = texture(yTexture,  vTexCoord).r;
+        float cb = texture(uvTexture, vTexCoord).r - 0.5;
+        float cr = texture(uvTexture, vTexCoord).g - 0.5;
+        float r = clamp(y + 1.402  * cr,              0.0, 1.0);
+        float g = clamp(y - 0.3441 * cb - 0.7141 * cr, 0.0, 1.0);
+        float b = clamp(y + 1.772  * cb,              0.0, 1.0);
+        fragColor = vec4(r, g, b, 1.0);
     }
     """
 
@@ -58,22 +69,30 @@ class VideoOpenGLWidget(QOpenGLWidget):
     precision mediump float;
     in vec2 vTexCoord;
     out vec4 fragColor;
-    uniform sampler2D videoTexture;
+    uniform sampler2D yTexture;
+    uniform sampler2D uvTexture;
     void main() {
-        fragColor = texture(videoTexture, vTexCoord);
+        float y  = texture(yTexture,  vTexCoord).r;
+        float cb = texture(uvTexture, vTexCoord).r - 0.5;
+        float cr = texture(uvTexture, vTexCoord).g - 0.5;
+        float r = clamp(y + 1.402  * cr,              0.0, 1.0);
+        float g = clamp(y - 0.3441 * cb - 0.7141 * cr, 0.0, 1.0);
+        float b = clamp(y + 1.772  * cb,              0.0, 1.0);
+        fragColor = vec4(r, g, b, 1.0);
     }
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._is_es = False
-        self.texture_id = None
+        self.y_texture_id  = None   # Y 平面（亮度），GL_RED
+        self.uv_texture_id = None   # UV 平面（色度），GL_RG，width/2 × height/2
         self.shader_program = None
         self.vao = None
         self.vbo_vertices = None
         self.vbo_tex_coords = None
-        self.current_frame = None
-        self._pending_frame = None   # 最新待上传帧；update_frame 只写这里，paintGL 来消费
+        self._pending_frame = None   # (data: bytes, width: int, height: int) 或 None
+        self._has_frame = False      # 是否已收到过至少一帧
         self.frame_count = 0
         self._upload_count = 0
         self.frame_width = 0
@@ -88,19 +107,21 @@ class VideoOpenGLWidget(QOpenGLWidget):
 
             glClearColor(0.0, 0.0, 0.0, 1.0)
 
-            self.texture_id = glGenTextures(1)
-            glBindTexture(GL_TEXTURE_2D, self.texture_id)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+            self.y_texture_id  = glGenTextures(1)
+            self.uv_texture_id = glGenTextures(1)
+            for tex_id in (self.y_texture_id, self.uv_texture_id):
+                glBindTexture(GL_TEXTURE_2D, tex_id)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
             glBindTexture(GL_TEXTURE_2D, 0)
 
             self.vao = glGenVertexArrays(1)
             self.shader_program = self._compile_shaders()
             self._create_vbo()
 
-            logger.info("OpenGL initialized (texture / VAO / shader / VBO ready)")
+            logger.info("OpenGL initialized (Y/UV textures / VAO / shader / VBO ready)")
 
         except Exception as e:
             logger.error(f"initializeGL failed: {e}", exc_info=True)
@@ -181,25 +202,25 @@ class VideoOpenGLWidget(QOpenGLWidget):
         try:
             # 消费最新待上传帧（若无新帧则复用已上传纹理）
             if self._pending_frame is not None:
-                frame = self._pending_frame
+                data, width, height = self._pending_frame
                 self._pending_frame = None
 
-                width, height = frame.width(), frame.height()
-                ptr = frame.constBits()
-                if isinstance(ptr, int):
-                    import ctypes
-                    buf = (ctypes.c_ubyte * (width * height * 3)).from_address(ptr)
-                    img_data = np.frombuffer(buf, dtype=np.uint8).copy()
-                else:
-                    img_data = np.frombuffer(ptr, dtype=np.uint8, count=width * height * 3).copy()
-                img_data = img_data.reshape((height, width, 3))
+                y_size  = width * height
+                y_arr   = np.frombuffer(data[:y_size], dtype=np.uint8)
+                uv_arr  = np.frombuffer(data[y_size:], dtype=np.uint8)
 
                 t0 = time.monotonic()
-                glBindTexture(GL_TEXTURE_2D, self.texture_id)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0,
-                             GL_RGB, GL_UNSIGNED_BYTE, img_data)
+
+                glBindTexture(GL_TEXTURE_2D, self.y_texture_id)
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, width, height, 0,
+                             GL_RED, GL_UNSIGNED_BYTE, y_arr)
+
+                glBindTexture(GL_TEXTURE_2D, self.uv_texture_id)
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RG, width // 2, height // 2, 0,
+                             GL_RG, GL_UNSIGNED_BYTE, uv_arr)
+
                 glBindTexture(GL_TEXTURE_2D, 0)
-                self.current_frame = frame
+                self._has_frame = True
 
                 self._upload_count += 1
                 if self._upload_count % 30 == 0:
@@ -210,17 +231,27 @@ class VideoOpenGLWidget(QOpenGLWidget):
 
             glClear(GL_COLOR_BUFFER_BIT)
 
-            if self.current_frame is None:
+            if not self._has_frame:
                 return
 
-            glUseProgram(self.shader_program)
+            prog = self.shader_program
+            glUseProgram(prog)
+
             glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_2D, self.texture_id)
-            tex_location = glGetUniformLocation(self.shader_program, "videoTexture")
-            glUniform1i(tex_location, 0)
+            glBindTexture(GL_TEXTURE_2D, self.y_texture_id)
+            glUniform1i(glGetUniformLocation(prog, "yTexture"), 0)
+
+            glActiveTexture(GL_TEXTURE1)
+            glBindTexture(GL_TEXTURE_2D, self.uv_texture_id)
+            glUniform1i(glGetUniformLocation(prog, "uvTexture"), 1)
+
             glBindVertexArray(self.vao)
             glDrawArrays(GL_TRIANGLE_FAN, 0, 4)
             glBindVertexArray(0)
+
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D, 0)
+            glActiveTexture(GL_TEXTURE1)
             glBindTexture(GL_TEXTURE_2D, 0)
             glUseProgram(0)
 
@@ -230,27 +261,29 @@ class VideoOpenGLWidget(QOpenGLWidget):
             if "GLError" not in str(type(e).__name__):
                 logger.error(f"paintGL 异常: {e}", exc_info=True)
 
-    def update_frame(self, q_image: QImage):
-        """接收新帧：仅存储最新帧，由 paintGL 统一消费。
+    def update_frame(self, data: bytes, width: int, height: int):
+        """接收新 NV12 帧：仅存储最新帧，由 paintGL 统一消费。
         不在此处做 GL 上传——避免 makeCurrent/repaint 阻塞主线程导致帧积压。"""
-        if self.texture_id is None or q_image is None or q_image.isNull():
+        if self.y_texture_id is None or not data:
             return
-        if q_image.format() != QImage.Format_RGB888:
-            q_image = q_image.convertToFormat(QImage.Format_RGB888)
-        if self.frame_width != q_image.width() or self.frame_height != q_image.height():
-            self.frame_width = q_image.width()
-            self.frame_height = q_image.height()
-            logger.info(f"视频尺寸: {self.frame_width}x{self.frame_height}")
-        self._pending_frame = q_image   # 旧帧直接丢弃，始终保留最新
-        self.update()                   # Qt 自动合并多次 update()，只触发一次 paintGL
+        if self.frame_width != width or self.frame_height != height:
+            self.frame_width = width
+            self.frame_height = height
+            logger.info(f"视频尺寸: {width}x{height}")
+        self._pending_frame = (data, width, height)   # 旧帧直接丢弃，始终保留最新
+        self.update()                                  # Qt 自动合并多次 update()
 
     def cleanup(self):
         try:
             self.makeCurrent()
 
-            if self.texture_id is not None:
-                glDeleteTextures([self.texture_id])
-                self.texture_id = None
+            if self.y_texture_id is not None:
+                glDeleteTextures([self.y_texture_id])
+                self.y_texture_id = None
+
+            if self.uv_texture_id is not None:
+                glDeleteTextures([self.uv_texture_id])
+                self.uv_texture_id = None
 
             if self.shader_program is not None:
                 glDeleteProgram(self.shader_program)

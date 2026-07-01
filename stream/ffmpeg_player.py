@@ -12,7 +12,7 @@ _RETRY_DELAY = 5   # 断连后重连等待秒数
 
 
 class FFmpegRTSPPlayer(QThread):
-    frame_updated  = Signal(QImage)
+    frame_updated  = Signal(bytes, int, int)   # (nv12_data, width, height)
     error_occurred = Signal(str)
     status_changed = Signal(str)   # "connecting" | "streaming" | "reconnecting (Ns)" | "stopped"
 
@@ -34,16 +34,16 @@ class FFmpegRTSPPlayer(QThread):
                 self.ffmpeg_path,
                 "-f", "lavfi",
                 "-i", f"testsrc=size={self.width}x{self.height}:rate=15",
-                "-pix_fmt", "rgb24", "-f", "rawvideo", "-vcodec", "rawvideo",
+                "-pix_fmt", "nv12", "-f", "rawvideo", "-vcodec", "rawvideo",
                 "-an", "-sn", "-loglevel", "error", "-",
             ]
         import sys
         # OrangePi/Linux: 使用 RK3588 VPU 硬解，避免 ARM 软解速度不足导致 TCP 积压
         use_hw = sys.platform != "win32"
         hw_decoder = ["-c:v", "h264_rkmpp"] if use_hw else []
-        # FFmpeg 遇到软件 scale 滤镜会自动插入 hwdownload+NV12 转换，无需显式写
-        # （显式 hwdownload 在此版本 OrangePi FFmpeg + h264_rkmpp 上会导致连接失败）
-        vf = f"scale={self.width}:{self.height}:flags=fast_bilinear"
+        # 输出 NV12（h264_rkmpp 硬件原生格式），由 OpenGL Shader 做 YUV→RGB。
+        # 不加 -vf 和 -sws_flags：去掉所有 swscaler 路径，避免 I 帧 100-200ms 卡顿。
+        # 若 FFmpeg 报 "Impossible to convert"，改为 "-vf hwdownload,format=nv12"。
         return [
             self.ffmpeg_path,
             "-rtsp_transport", "tcp",
@@ -54,9 +54,7 @@ class FFmpegRTSPPlayer(QThread):
             "-analyzeduration", "100000",
             *hw_decoder,
             "-i", self.rtsp_url,
-            "-vf", vf,
-            "-sws_flags", "fast_bilinear",
-            "-pix_fmt", "rgb24", "-f", "rawvideo", "-vcodec", "rawvideo",
+            "-pix_fmt", "nv12", "-f", "rawvideo", "-vcodec", "rawvideo",
             "-threads", "4", "-thread_type", "slice",
             "-an", "-sn", "-loglevel", "warning", "-",
         ]
@@ -64,7 +62,7 @@ class FFmpegRTSPPlayer(QThread):
     def run(self):
         self._is_running = True
         self._stop_event.clear()
-        frame_size = self.width * self.height * 3
+        frame_size = self.width * self.height * 3 // 2   # NV12 = 1.5 bytes/pixel
 
         while self._is_running:
             self.status_changed.emit("connecting")
@@ -116,11 +114,7 @@ class FFmpegRTSPPlayer(QThread):
                                     f"fps={fps:.1f}  last_decode={decode_ms:.0f}ms")
                         t_window = t_read_end
 
-                    q_image = QImage(
-                        raw, self.width, self.height,
-                        self.width * 3, QImage.Format.Format_RGB888,
-                    ).copy()
-                    self.frame_updated.emit(q_image)
+                    self.frame_updated.emit(bytes(raw), self.width, self.height)
 
                 if self._is_running:
                     err = self._read_stderr()
@@ -192,10 +186,12 @@ if __name__ == "__main__":
     label.resize(1280, 960)
     label.show()
 
-    url = "rtsp://192.168.1.36:554/ch01.264"
+    url = "rtsp://192.168.5.36:554/ch01.264"
     player = FFmpegRTSPPlayer(url, width=2592, height=1904)
 
-    def on_frame(q_image: QImage):
+    def on_frame(data: bytes, w: int, h: int):
+        # NV12 独立测试：用 Y 平面做灰度显示（仅验证帧率/连通性）
+        q_image = QImage(data[:w * h], w, h, w, QImage.Format.Format_Grayscale8)
         pixmap = QPixmap.fromImage(q_image).scaled(
             label.size(), Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
