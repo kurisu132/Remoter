@@ -29,7 +29,7 @@
 | UI 布局层 | `ui/window_ui.py` | 纯 UI 布局（`WindowUI.setup_ui(self)`）；widget 创建、样式表、信号连接；无业务逻辑 | 启动线程；处理业务事件 |
 | 业务逻辑层 | `gui/main_window.py` | 调用 `WindowUI.setup_ui(self)` 构建 UI；管理 RTSP/STM32/UDP/PTZ/补光灯生命周期；F11/ESC 全屏；closeEvent 有序释放资源 | 直接创建 widget；解析协议帧 |
 | 渲染层 | `gui/video_opengl_widget.py` | OpenGL 纹理创建与帧上传；GLSL 双模着色器（Desktop / ES）；VAO/VBO 管理；GPU 资源清理 | 知道 RTSP URL；做任何网络操作 |
-| 流媒体层 | `stream/ffmpeg_player.py` | FFmpeg 子进程启动/终止；从 stdout 读 RGB24 裸帧；封装为 QImage（deep copy）通过信号发送 | 直接操作 UI；知道 OpenGL 细节 |
+| 流媒体层 | `stream/ffmpeg_player.py` | FFmpeg 子进程启动/终止；从 stdout 读 NV12 裸帧；Signal(bytes, int, int) 跨线程发送至渲染层 | 直接操作 UI；知道 OpenGL 细节 |
 | STM32 输入 | `stream/stm32_reader.py` | 串口帧同步与解析；发射 `frame_received(ControlFrame)` 信号 | 知道 UDP 目标；做任何网络操作 |
 | UDP 输出 | `stream/udp_control_sender.py` | 50 Hz 定时发送 REMOTE_PROTOCOL_v1 帧；线程安全更新控制值；运行时切换目标 IP | 知道串口细节；直接读 STM32 |
 | PTZ 控制 | `api/ptz_control.py` | HTTP Digest 认证 PTZ 控制（持久 Session）| 知道视频流 |
@@ -49,29 +49,35 @@
   → H264 编码器（相机 CPU）                [编码延迟 50-200ms，受 I 帧间隔影响]
   → RTSP/TCP 网络传输                     [LAN 直连 <1ms]
   → FFmpeg RTSP demux（max_delay=0）      [≈0ms]
-  → H264 解码                             [软解 5MP: ~100ms/帧；软解 720P: ~10ms/帧；
-                                           RK3588 硬解 h264_rkmpp: <10ms/帧]
-  → rawvideo stdout pipe
+  → H264 解码（h264_rkmpp VPU 硬解）      [P 帧 6-15ms；I 帧（默认码率）20-100ms；
+                                           I 帧（8Mbps）66-106ms；2026-07-01 实测]
+  → NV12 rawvideo stdout pipe             [frame_size = width×height×3//2，bufsize 背压]
   → FFmpegRTSPPlayer.run() stdout.read()  [阻塞，等 FFmpeg 完成一帧]
-      numpy 零拷贝 → QImage deep copy
-  → Signal: frame_updated(QImage)         [跨线程 QueuedConnection，<1ms]
+  → Signal: frame_updated(bytes, int, int)[跨线程 QueuedConnection，<1ms]
   → VideoOpenGLWidget.update_frame()
-      makeCurrent + numpy + glTexImage2D  [5MP: 20-46ms；720P: 3-8ms]
-  → repaint() → paintGL()                [vsync ~16ms]
+      _pending_frame 存最新帧，旧帧丢弃
+  → paintGL() 消费：
+      glTexImage2D Y 平面（GL_RED, w×h）
+      glTexImage2D UV 平面（GL_RG, w/2×h/2）[texUpload 合计 1-4ms，2026-07-01 实测]
+      GLSL BT.601 YUV→RGB shader（GPU 完成）
   → 屏幕
 ```
 
-**各平台实测延迟（稳态，2026-06-29）**
+**各平台实测延迟（稳态）**
 
 | 配置 | 解码帧率 | 稳定延迟 | 备注 |
 |---|---|---|---|
-| Windows x86，5MP，软解 | 40-60fps | <200ms | CPU 算力充足，不积压 |
-| OrangePi，5MP，软解 | 10-11fps | 随时间无限增长 | decode < send → TCP 积压 |
-| OrangePi，720P，软解 | ~30fps | ~500ms | 积压消失，稳定 |
-| OrangePi，5MP，h264_rkmpp（计划中） | ~15fps | 预期 200-400ms | VPU 硬解，消除 CPU 瓶颈 |
+| Windows x86，5MP，软解 | 40-60fps | <200ms | CPU 算力充足，不积压（2026-06-29）|
+| OrangePi，5MP，软解 | 10-11fps | 随时间无限增长 | decode < send → TCP 积压（2026-06-29）|
+| OrangePi，720P，软解 | ~30fps | ~500ms | 积压消失，稳定（2026-06-29）|
+| OrangePi，5MP，h264_rkmpp + NV12 | ~20fps | ~500ms | VPU 硬解 + GLSL YUV→RGB，积压消除（2026-07-01 实测）|
 
-**5MP 软解延迟无限增长根因**：OrangePi 软解上限 ~10fps，摄像头发 15fps，每秒净积压 5 帧。
-运行 20s → 积压 100 帧 ÷ 15fps = **6.7s 延迟**。调 FFmpeg 参数无法解决，根治需硬件解码。
+**OrangePi h264_rkmpp + NV12 管道关键性能**（2026-07-01 实测）：
+- P 帧解码：**6-15ms**，帧率稳定 ~20fps
+- I 帧解码（PTZ 移动后，默认码率）：**20-100ms** 短暂尖峰后恢复
+- I 帧解码（PTZ 移动后，8Mbps 码率）：**66-106ms**，8Mbps I 帧数据量约为默认的 3-5 倍
+- texUpload（NV12 双纹理，7.4MB/帧）：**1-4ms**
+- 无 swscaler warning（`[ffmpeg] [swscaler]` 行零出现）
 
 ### 3.2 STM32 控制路径（~50 Hz）
 
@@ -165,9 +171,6 @@ Byte 7  : checksum  sum(bytes[0..6]) & 0xFF
 
 OrangePi 5 实测：Mesa Panfrost 运行 **OpenGL 3.3 Desktop**，libGL 的 rockchip/dri3 报错为无害警告。
 
-### QImage 必须 deep copy
-`FFmpegRTSPPlayer` 将 numpy buffer 包装为 `QImage` 后须立即 `.copy()`，否则 buffer 随栈帧释放后 `QImage` 指向悬空内存。
-
 ### `VideoOpenGLWidget.cleanup()` 需在 GL 上下文内调用
 方法内部调用 `makeCurrent()` 保证上下文激活；调用方需在 widget 仍有效时执行（`closeEvent` 中），不能推迟到 `QApplication` 析构阶段。
 
@@ -196,45 +199,44 @@ sudo usermod -aG dialout $USER   # 重新登录生效
 | 指标 | Windows x86 | OrangePi ARM64 |
 |---|---|---|
 | H264 软解 5MP 帧率 | 40-60fps | **~10fps（上限）** |
-| GL texUpload 5MP | ~0ms（驱动 DMA） | 17-46ms（CPU→GPU 拷贝） |
-| GL texUpload 720P | ~0ms | 3-8ms |
-| 首帧延迟 | ~900ms | ~3500ms |
+| H264 h264_rkmpp 5MP 帧率 | — | ~20fps（VPU 硬解） |
+| GL texUpload 5MP RGB24 | ~0ms（驱动 DMA） | 17-46ms（CPU→GPU 拷贝，已弃用） |
+| GL texUpload 5MP NV12 | ~0ms | **1-4ms**（7.4MB 双纹理，2026-07-01 实测） |
+| 首帧延迟 | ~900ms | ~2300ms（h264_rkmpp，2026-07-01 实测） |
 
-OrangePi GL 上传慢的原因：Mesa Panfrost 驱动不做 DMA 零拷贝，`glTexImage2D` 需要
-CPU 将 numpy 数组（14.8MB）拷贝到 GPU 可访问内存，耗时随帧大小线性增长。
+OrangePi RGB24 GL 上传慢的历史原因：Mesa Panfrost 不做 DMA 零拷贝，`glTexImage2D` 需 CPU 将 14.8MB 拷贝到 GPU 内存。切换 NV12 后数据量减半（7.4MB），实测 texUpload 降至 1-4ms。
 
 ### 当前 FFmpeg 命令关键参数（`stream/ffmpeg_player.py` `_build_cmd()`）
 
 ```
--rtsp_transport tcp      # UDP 丢包会造成 RGB24 字节错位花屏，必须 TCP
+-rtsp_transport tcp      # UDP 丢包会造成 NV12 字节错位花屏，必须 TCP
 -fflags nobuffer         # 禁用 FFmpeg 内部 I/O 缓冲
 -flags low_delay         # 降低解码器内部延迟
 -max_delay 0             # RTSP demuxer 最大缓冲设为 0（默认 5s）
 -probesize 2048          # 最小探测字节数（32 太激进会连接失败）
 -analyzeduration 100000  # 0.1s 流分析（原 1s），减少首帧延迟
+-c:v h264_rkmpp          # Linux 专用：RK3588 VPU 硬解（sys.platform 判断）
+-pix_fmt nv12            # 硬件原生格式，跳过 swscaler；切回 rgb24 会触发 ARM 软件色彩转换
 ```
 
-Linux（OrangePi）额外加 `-c:v h264_rkmpp`（已在计划中实施）。
+### RK3588 硬件解码 + NV12 管道（已实施，2026-07-01）
 
-### RK3588 硬件解码路线图
+**实施内容**：
+- `_build_cmd()` 在 Linux 上加 `-c:v h264_rkmpp -pix_fmt nv12`
+- `VideoOpenGLWidget` 改为双纹理（Y/UV）+ GLSL BT.601 YUV→RGB shader
+- 信号类型：`Signal(QImage)` → `Signal(bytes, int, int)`
+- `stderr=sp.PIPE` 必须配合 `_drain_stderr()` 线程，否则 64KB 管道满死锁
 
-**状态**：`h264_rkmpp` 已确认内置于 `/usr/bin/ffmpeg`，待实施。
+**实测结果**（2026-07-01，三次会话日志验证）：
+- swscaler 警告：**零条**（`-pix_fmt nv12` 彻底跳过 swscaler）
+- P 帧解码：**6-15ms**，帧率 ~20fps，无积压
+- I 帧解码（默认码率，PTZ 移动后）：**20-100ms**，短暂后恢复
+- I 帧解码（8Mbps 码率，PTZ 移动后）：**66-106ms**，受 VPU 吞吐和 I 帧数据量限制
+- texUpload（NV12，7.4MB/帧）：**1-4ms**
 
-**实施方式**（仅改 `_build_cmd()`）：
-```python
-import sys
-hw_decoder = ["-c:v", "h264_rkmpp"] if sys.platform != "win32" else []
-# 插入 -i 之前；FFmpeg 遇到软件 scale 滤镜自动插入 hwdownload+NV12 转换
-```
-
-**预期效果**：
-- 5MP H264 解码 <10ms/帧（vs 软解 ~100ms）
-- 摄像头可恢复 5MP/15fps，TCP 积压消失
-- 稳定延迟预期 200-400ms（接近 720P 软解的 500ms，但分辨率恢复）
-
-**后续优化**（NV12 管道）：让 FFmpeg 输出 NV12（1.5B/px）而非 RGB24（3B/px），
-GL 上传量减半（7.4MB vs 14.8MB），需修改 `video_opengl_widget.py` 着色器
-加入 YUV→RGB 转换逻辑。
+**剩余优化方向**（如 I 帧尖峰仍不可接受）：
+- 降低摄像头码率（4-5Mbps → 预期 I 帧降至 30-50ms）
+- 增大 GOP 间隔（减少 PTZ 后 I 帧触发频率）
 
 ---
 

@@ -84,13 +84,23 @@
 - 预期 vs 实际：以为 h264_rkmpp 解码后直接输出 rgb24，性能表现稳定；实际 FFmpeg 在部分场景（PTZ 移动后的画面变化）自动插入 swscaler 做 yuv420p→rgb24 色彩转换，且 ARM 上 swscaler 无 SIMD 加速（日志警告 "No accelerated colorspace conversion found from yuv420p to rgb24"），导致 I 帧耗时 100-211ms，每次 PTZ 后可见 "冻帧"
 - 根因：h264_rkmpp 输出 drm_prime/NV12 → FFmpeg 自动 hwdownload 到 yuv420p → swscaler 软件转换到 rgb24；静止场景无 I 帧时不明显，PTZ 移动产生 I 帧时触发
 - 结论/对策：要求 FFmpeg 输出 NV12（硬件原生格式），跳过 swscaler；OpenGL Shader 做 YUV→RGB（GPU 完成，无卡顿）；信号接口 frame_updated 从 Signal(QImage) 改为 Signal(bytes, int, int)
-- 状态：[新增]
+- 状态：[已提炼→CLAUDE.md 视频管道关键约束 `-pix_fmt nv12` 行；ARCHITECTURE.md §6]
 
 ## [2026-07-01] h264_rkmpp + stderr=PIPE 导致卡死的根因是管道死锁，不是硬件解码不兼容
 
 - 预期 vs 实际：以为 OrangePi 卡死是 h264_rkmpp 硬件解码路径不通（格式转换失败、hwdownload 不兼容等）；实际根因是 stderr 管道满导致的经典 subprocess 死锁：FFmpeg 写大量错误到 stderr → 64KB pipe 缓冲区写满 → FFmpeg 阻塞在 write() → Python 阻塞在 stdout.read() → 双方永久等待
 - 根因：`subprocess.Popen(stderr=PIPE)` 时若不持续读取 stderr，只需约 2000 行 FFmpeg 错误输出即可填满 64KB 缓冲区；`-loglevel error` 减少了行数但在 drm_prime 格式转换失败时仍足以触发死锁；之前"显式 hwdownload 导致连接失败"的判断是错误的，真正原因是 hwdownload 引发更多错误消息，更快填满 stderr 管道
 - 结论/对策：凡是 `stderr=PIPE` 的 Popen，必须同时在独立线程中持续排空 stderr（`for line in proc.stderr: logger.warning(line)`）；`_read_stderr()` 事后读取的模式对长时运行进程无效
+- 状态：[已提炼→CLAUDE.md 视频管道关键约束 `stderr=sp.PIPE + _drain_stderr()` 行]
+
+## [2026-07-01] 消除 swscaler 后，8Mbps 码率下 VPU 解码大 I 帧仍需 66-106ms
+
+- 预期 vs 实际：以为切换 NV12 管道消除 swscaler 后 PTZ I 帧尖峰也会消失；实际 VPU（h264_rkmpp）解码速度本身受 I 帧数据量影响，8Mbps I 帧（约 200-300KB）比默认码率 I 帧（约 60-80KB）大 3-5 倍，VPU 需 66-106ms；默认码率下 I 帧尖峰 20-100ms，恢复更快
+- 根因：h264_rkmpp VPU 吞吐有硬件上限，I 帧数据量随码率线性增长，无软件侧优化空间；3 次实机日志（2026-07-01）全程无 swscaler warning，确认剩余尖峰纯属 VPU 解码耗时
+- 结论/对策：进一步降低尖峰需调整摄像头参数，有两个方向：
+  (1) **降低码率**（4-5Mbps）→ I 帧数据量减半，预期尖峰降至 30-50ms
+  (2) **增大 I 帧间隔**（GOP 从 1s 改为 2-3s）→ 减少 PTZ 后 I 帧触发频率
+  当前（8Mbps，持续 PTZ）：66-106ms，帧率稳定 ~20fps，不积压——是否可接受由业务决定
 - 状态：[新增]
 
 ## [2026-06-29] h264_rkmpp 已内置于 OrangePi 系统 ffmpeg，无需另装
