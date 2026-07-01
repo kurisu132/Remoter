@@ -73,6 +73,7 @@ class VideoOpenGLWidget(QOpenGLWidget):
         self.vbo_vertices = None
         self.vbo_tex_coords = None
         self.current_frame = None
+        self._pending_frame = None   # 最新待上传帧；update_frame 只写这里，paintGL 来消费
         self.frame_count = 0
         self._upload_count = 0
         self.frame_width = 0
@@ -178,6 +179,35 @@ class VideoOpenGLWidget(QOpenGLWidget):
 
     def paintGL(self):
         try:
+            # 消费最新待上传帧（若无新帧则复用已上传纹理）
+            if self._pending_frame is not None:
+                frame = self._pending_frame
+                self._pending_frame = None
+
+                width, height = frame.width(), frame.height()
+                ptr = frame.constBits()
+                if isinstance(ptr, int):
+                    import ctypes
+                    buf = (ctypes.c_ubyte * (width * height * 3)).from_address(ptr)
+                    img_data = np.frombuffer(buf, dtype=np.uint8).copy()
+                else:
+                    img_data = np.frombuffer(ptr, dtype=np.uint8, count=width * height * 3).copy()
+                img_data = img_data.reshape((height, width, 3))
+
+                t0 = time.monotonic()
+                glBindTexture(GL_TEXTURE_2D, self.texture_id)
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0,
+                             GL_RGB, GL_UNSIGNED_BYTE, img_data)
+                glBindTexture(GL_TEXTURE_2D, 0)
+                self.current_frame = frame
+
+                self._upload_count += 1
+                if self._upload_count % 30 == 0:
+                    logger.info(
+                        f"[gl] upload={self._upload_count}  "
+                        f"texUpload={(time.monotonic()-t0)*1000:.1f}ms"
+                    )
+
             glClear(GL_COLOR_BUFFER_BIT)
 
             if self.current_frame is None:
@@ -186,14 +216,11 @@ class VideoOpenGLWidget(QOpenGLWidget):
             glUseProgram(self.shader_program)
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, self.texture_id)
-
             tex_location = glGetUniformLocation(self.shader_program, "videoTexture")
             glUniform1i(tex_location, 0)
-
             glBindVertexArray(self.vao)
             glDrawArrays(GL_TRIANGLE_FAN, 0, 4)
             glBindVertexArray(0)
-
             glBindTexture(GL_TEXTURE_2D, 0)
             glUseProgram(0)
 
@@ -204,58 +231,18 @@ class VideoOpenGLWidget(QOpenGLWidget):
                 logger.error(f"paintGL 异常: {e}", exc_info=True)
 
     def update_frame(self, q_image: QImage):
+        """接收新帧：仅存储最新帧，由 paintGL 统一消费。
+        不在此处做 GL 上传——避免 makeCurrent/repaint 阻塞主线程导致帧积压。"""
         if self.texture_id is None or q_image is None or q_image.isNull():
             return
-
         if q_image.format() != QImage.Format_RGB888:
             q_image = q_image.convertToFormat(QImage.Format_RGB888)
-
         if self.frame_width != q_image.width() or self.frame_height != q_image.height():
             self.frame_width = q_image.width()
             self.frame_height = q_image.height()
             logger.info(f"视频尺寸: {self.frame_width}x{self.frame_height}")
-
-        self.current_frame = q_image
-
-        try:
-            t0 = time.monotonic()
-            self.makeCurrent()
-            t1 = time.monotonic()
-
-            glBindTexture(GL_TEXTURE_2D, self.texture_id)
-
-            width, height = q_image.width(), q_image.height()
-            ptr = q_image.constBits()
-            if isinstance(ptr, int):
-                import ctypes
-                buf = (ctypes.c_ubyte * (width * height * 3)).from_address(ptr)
-                img_data = np.frombuffer(buf, dtype=np.uint8).copy()
-            else:
-                img_data = np.frombuffer(ptr, dtype=np.uint8, count=width * height * 3).copy()
-
-            img_data = img_data.reshape((height, width, 3))
-            t2 = time.monotonic()
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0,
-                         GL_RGB, GL_UNSIGNED_BYTE, img_data)
-            t3 = time.monotonic()
-
-            glBindTexture(GL_TEXTURE_2D, 0)
-            self.doneCurrent()
-
-            self._upload_count += 1
-            if self._upload_count % 30 == 0:
-                logger.info(
-                    f"[gl] upload={self._upload_count}  "
-                    f"makeCurrent={( t1-t0)*1000:.1f}ms  "
-                    f"numpy={(t2-t1)*1000:.1f}ms  "
-                    f"texUpload={(t3-t2)*1000:.1f}ms  "
-                    f"total={(t3-t0)*1000:.1f}ms"
-                )
-
-            self.repaint()
-
-        except Exception as e:
-            logger.error(f"update_frame 异常: {e}", exc_info=True)
+        self._pending_frame = q_image   # 旧帧直接丢弃，始终保留最新
+        self.update()                   # Qt 自动合并多次 update()，只触发一次 paintGL
 
     def cleanup(self):
         try:

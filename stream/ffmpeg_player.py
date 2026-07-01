@@ -39,7 +39,15 @@ class FFmpegRTSPPlayer(QThread):
             ]
         import sys
         # OrangePi/Linux: 使用 RK3588 VPU 硬解，避免 ARM 软解速度不足导致 TCP 积压
-        hw_decoder = ["-c:v", "h264_rkmpp"] if sys.platform != "win32" else []
+        use_hw = sys.platform != "win32"
+        hw_decoder = ["-c:v", "h264_rkmpp"] if use_hw else []
+        # h264_rkmpp 输出帧在硬件内存(NV12)，必须显式 hwdownload 后才能接软件 scale/pix_fmt
+        # 否则前几帧格式未初始化，出现绿色/灰色撕裂花屏
+        vf = (
+            f"hwdownload,format=nv12,scale={self.width}:{self.height}:flags=fast_bilinear"
+            if use_hw else
+            f"scale={self.width}:{self.height}:flags=fast_bilinear"
+        )
         return [
             self.ffmpeg_path,
             "-rtsp_transport", "tcp",
@@ -50,7 +58,7 @@ class FFmpegRTSPPlayer(QThread):
             "-analyzeduration", "100000",
             *hw_decoder,
             "-i", self.rtsp_url,
-            "-vf", f"scale={self.width}:{self.height}:flags=fast_bilinear",
+            "-vf", vf,
             "-sws_flags", "fast_bilinear",
             "-pix_fmt", "rgb24", "-f", "rawvideo", "-vcodec", "rawvideo",
             "-threads", "4", "-thread_type", "slice",
