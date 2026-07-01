@@ -71,7 +71,10 @@ class FFmpegRTSPPlayer(QThread):
                     self._build_cmd(),
                     stdout=sp.PIPE,
                     stderr=sp.PIPE,
-                    bufsize=frame_size,
+                    bufsize=frame_size,   # 必须等于 frame_size，不可改为 -1 或更大值。
+                                      # 背压机制：pipe 只容 1 帧，FFmpeg 写满即阻塞，
+                                      # 强制解码速率跟随消费速率，防止帧堆积延迟暴涨。
+                                      # 改为 -1 的后果：延迟从 ~500ms 线性增长到数秒（2026-06 已验证）。
                 )
 
                 first = True
