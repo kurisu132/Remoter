@@ -58,7 +58,7 @@ class FFmpegRTSPPlayer(QThread):
             "-sws_flags", "fast_bilinear",
             "-pix_fmt", "rgb24", "-f", "rawvideo", "-vcodec", "rawvideo",
             "-threads", "4", "-thread_type", "slice",
-            "-an", "-sn", "-loglevel", "error", "-",
+            "-an", "-sn", "-loglevel", "warning", "-",
         ]
 
     def run(self):
@@ -80,6 +80,10 @@ class FFmpegRTSPPlayer(QThread):
                                       # 强制解码速率跟随消费速率，防止帧堆积延迟暴涨。
                                       # 改为 -1 的后果：延迟从 ~500ms 线性增长到数秒（2026-06 已验证）。
                 )
+                # 必须在独立线程中持续排空 stderr，否则管道 64KB 缓冲区写满后
+                # FFmpeg 阻塞在 stderr write，Python 阻塞在 stdout.read → 双向死锁。
+                self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+                self._stderr_thread.start()
 
                 first = True
                 frame_count = 0
@@ -143,11 +147,21 @@ class FFmpegRTSPPlayer(QThread):
         self.status_changed.emit("stopped")
         logger.info("player stopped")
 
-    def _read_stderr(self) -> str:
+    def _drain_stderr(self):
+        """持续排空 FFmpeg stderr，防止 64KB 管道缓冲区写满导致死锁。内容写入日志。"""
         try:
-            return self._process.stderr.read(2048).decode("utf-8", errors="ignore").strip()
+            proc = self._process
+            if proc is None or proc.stderr is None:
+                return
+            for raw_line in proc.stderr:
+                line = raw_line.decode("utf-8", errors="ignore").strip()
+                if line:
+                    logger.warning(f"[ffmpeg] {line}")
         except Exception:
-            return ""
+            pass
+
+    def _read_stderr(self) -> str:
+        return ""   # stderr 已由 _drain_stderr 线程持续消费并写入日志
 
     def _stop_process(self):
         if self._process:
