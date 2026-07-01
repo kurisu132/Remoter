@@ -173,7 +173,7 @@ git commit -m "docs: CLAUDE.md 补充重连行为说明"
 
 ```
 origin   → GitHub（https://github.com/kurisu132/Remoter.git）存档备份
-orangepi → OrangePi 直推（orangepi@192.168.5.10:/home/orangepi/PythonProjects/vlink）实机测试
+orangepi → OrangePi 直推（orangepi@192.168.5.249:/home/orangepi/PythonProjects/vlink）实机测试
 ```
 
 查看当前配置：
@@ -208,7 +208,7 @@ git push origin dev/phase1-refactor
 SSH 配置（`~/.ssh/config`）：
 ```
 Host orangepi
-    HostName 192.168.5.10
+    HostName 192.168.5.249
     User orangepi
     Port 22
     IdentityFile ~/.ssh/id_ed25519
@@ -216,8 +216,9 @@ Host orangepi
     ServerAliveCountMax 3
 ```
 
-OrangePi IP：192.168.5.10（eth0 静态 IP，直连网线）  
-开发机 IP：192.168.5.12
+OrangePi IP：192.168.5.249（路由器局域网，摄像头/Win/OrangePi 同网段）  
+开发机 IP：192.168.5.34  
+摄像头 IP：192.168.5.36
 
 连接方式：VS Code → Ctrl+Shift+P → "Remote-SSH: Connect to Host..." → 选择 `orangepi`
 
@@ -231,8 +232,23 @@ git init
 git config receive.denyCurrentBranch updateInstead
 
 # Windows 上添加 remote（仅首次）
-git remote add orangepi orangepi@192.168.5.10:/home/orangepi/PythonProjects/vlink
+git remote add orangepi orangepi@192.168.5.249:/home/orangepi/PythonProjects/vlink
 ```
+
+---
+
+## 视频管道关键约束（修改前必读）
+
+以下参数经过多次实战验证，**未经测试不得修改**：
+
+| 参数 / 位置 | 值 | 禁止改动的原因 |
+|---|---|---|
+| `stream/ffmpeg_player.py` — `bufsize` | `frame_size`（`width×height×3`） | 背压机制，防止帧在 pipe 中堆积；改为 `-1` 会导致延迟从 ~500ms 线性增长到数秒 |
+| `_build_cmd()` — `-rtsp_transport` | `tcp` | UDP 丢包会造成 RGB24 字节流错位，全绿花屏无法恢复，只能用 TCP |
+| `_build_cmd()` — `-max_delay` | `0` | 消除 FFmpeg RTSP 解复用器默认 5 秒内部缓冲 |
+| `_build_cmd()` — `-c:v h264_rkmpp` | Linux 上启用 | 香橙派 5MP 软解仅 10fps，低于摄像头 15fps，只有硬解才能消除积压 |
+
+新增 FFmpeg 参数前，先查 `LESSONS.md` 确认该方向是否已尝试过。
 
 ---
 
