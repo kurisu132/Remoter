@@ -79,6 +79,13 @@
 - 结论/对策：对本应用（RGB24 裸帧管道）而言必须使用 TCP 传输，TCP 的顺序保证使字节流不会错位；若需降低延迟，靠 `-max_delay 0` 和 `-analyzeduration 100000` 压缩 FFmpeg 内部缓冲，而不是切 UDP
 - 状态：[新增]
 
+## [2026-07-01] h264_rkmpp + stderr=PIPE 导致卡死的根因是管道死锁，不是硬件解码不兼容
+
+- 预期 vs 实际：以为 OrangePi 卡死是 h264_rkmpp 硬件解码路径不通（格式转换失败、hwdownload 不兼容等）；实际根因是 stderr 管道满导致的经典 subprocess 死锁：FFmpeg 写大量错误到 stderr → 64KB pipe 缓冲区写满 → FFmpeg 阻塞在 write() → Python 阻塞在 stdout.read() → 双方永久等待
+- 根因：`subprocess.Popen(stderr=PIPE)` 时若不持续读取 stderr，只需约 2000 行 FFmpeg 错误输出即可填满 64KB 缓冲区；`-loglevel error` 减少了行数但在 drm_prime 格式转换失败时仍足以触发死锁；之前"显式 hwdownload 导致连接失败"的判断是错误的，真正原因是 hwdownload 引发更多错误消息，更快填满 stderr 管道
+- 结论/对策：凡是 `stderr=PIPE` 的 Popen，必须同时在独立线程中持续排空 stderr（`for line in proc.stderr: logger.warning(line)`）；`_read_stderr()` 事后读取的模式对长时运行进程无效
+- 状态：[新增]
+
 ## [2026-06-29] h264_rkmpp 已内置于 OrangePi 系统 ffmpeg，无需另装
 
 - 预期 vs 实际：以为 RK3588 MPP 硬件解码需要安装 `ffmpeg-rockchip` 或从源码编译；实际 `ffmpeg -codecs | grep h264` 确认 `h264_rkmpp` 已作为解码器选项存在于 `/usr/bin/ffmpeg`，可直接用 `-c:v h264_rkmpp` 启用，`ffmpeg -hwaccels` 虽然没列出 rkmpp 但解码器本身可用
