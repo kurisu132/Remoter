@@ -214,6 +214,21 @@ def _build_status_bar(parent: QWidget, root: QVBoxLayout) -> None:
     h.addSpacing(8)
     h.addWidget(btn)
 
+    parent.btn_settings = QPushButton("⚙")
+    parent.btn_settings.setFixedSize(28, 28)
+    parent.btn_settings.setStyleSheet("""
+        QPushButton {
+            background-color: #2a2a2a; color: #aaaaaa;
+            border: 1px solid #3a3a3a; border-radius: 4px;
+            font-size: 16px;
+        }
+        QPushButton:hover   { background-color: #3a3a3a; color: #ffffff; }
+        QPushButton:pressed { background-color: #1e1e1e; }
+    """)
+    parent.btn_settings.setToolTip("设置")
+    h.addSpacing(6)
+    h.addWidget(parent.btn_settings)
+
     root.addWidget(bar)
 
     # UDP 状态刷新定时器

@@ -21,7 +21,7 @@ import threading
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QSurfaceFormat
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QWidget
 
 from api.light_control import LightControlClient
 from api.ptz_control import PTZControlClient
@@ -45,6 +45,7 @@ class MainWindow(QWidget):
         self._test_mode = test_mode
 
         WindowUI.setup_ui(self)          # 构建全部 UI
+        self.btn_settings.clicked.connect(self._open_settings)
         self._start_rtsp()
         self._start_udp_sender()
         self._start_stm32()
@@ -123,6 +124,44 @@ class MainWindow(QWidget):
         if ip:
             self.udp_sender.set_target(ip)
             logger.info(f"UDP target set to {ip}")
+
+    def _open_settings(self):
+        from gui.settings_dialog import SettingsDialog
+        old_port = load_config().get("stm32_port", "/dev/ttyACM0")
+        dlg = SettingsDialog(parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            cfg = load_config()
+            self._ip_edit.setText(cfg.get("target_ip", self._ip_edit.text()))
+            self.udp_sender.set_target(
+                cfg.get("target_ip", self.udp_sender.target_ip),
+                cfg.get("target_port", 9000),
+            )
+            self._restart_camera_clients(cfg)
+            self._restart_stm32_if_needed(old_port, cfg)
+            logger.info("settings saved")
+
+    def _restart_camera_clients(self, cfg: dict):
+        host = cfg.get("camera_host", "192.168.1.36")
+        user = cfg.get("camera_user", "admin")
+        pwd  = cfg.get("camera_pass", "123456")
+        self._ptz_queue.put(None)
+        self._ptz   = PTZControlClient(host=host, username=user, password=pwd)
+        self._light = LightControlClient(host=host, username=user, password=pwd)
+        self._ptz_queue = queue.Queue()
+        threading.Thread(target=self._ptz_worker_loop, daemon=True).start()
+        logger.info(f"camera API clients restarted: {host}")
+
+    def _restart_stm32_if_needed(self, old_port: str, cfg: dict):
+        new_port = cfg.get("stm32_port", old_port)
+        if new_port == old_port:
+            return
+        self.stm32.stop()
+        self.stm32.wait(1000)
+        self.stm32 = STM32Reader(port=new_port)
+        self.stm32.frame_received.connect(self._on_stm32_frame)
+        self.stm32.error_occurred.connect(self._on_stm32_error)
+        self.stm32.start()
+        logger.info(f"STM32 reader restarted: {new_port}")
 
     # ─────────────────────────────────────────────── 摄像头 API 客户端
     def _start_camera_clients(self):

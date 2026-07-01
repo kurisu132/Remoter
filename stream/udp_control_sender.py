@@ -89,6 +89,17 @@ def _set_toml_value(content: str, key: str, value) -> str:
     return re.sub(pattern, replacement, content, flags=re.MULTILINE)
 
 
+def save_config_values(updates: dict) -> None:
+    """一次性写入多个 config key，保留注释和其余字段。"""
+    try:
+        text = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.exists() else _DEFAULT_TOML
+        for key, value in updates.items():
+            text = _set_toml_value(text, key, value)
+        CONFIG_PATH.write_text(text, encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"save_config_values error: {e}")
+
+
 def build_udp_frame(left: int, right: int, flags: int) -> bytes:
     """将控制值打包为 REMOTE_PROTOCOL_v1 的 8 字节 UDP 帧"""
     payload = struct.pack(
