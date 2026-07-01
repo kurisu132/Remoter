@@ -12,7 +12,8 @@
 |---|---|---|
 | 流媒体层 | `stream/ffmpeg_player.py` | FFmpeg 子进程驱动帧采集 |
 | 渲染层 | `gui/video_opengl_widget.py` | OpenGL 纹理上传与 GLSL 渲染 |
-| UI 层 | `gui/main_window.py` | 窗口布局、生命周期、资源管理 |
+| UI 布局层 | `ui/window_ui.py` | 纯 UI 布局——widget 创建、样式表、信号连接 |
+| 业务逻辑层 | `gui/main_window.py` | 生命周期管理、资源调度、事件处理 |
 | 控制层（输入） | `stream/stm32_reader.py` | STM32 串口帧读取与解析 |
 | 控制层（输出） | `stream/udp_control_sender.py` | UDP 控制帧封装与发送（50 Hz） |
 | 摄像头 API 层 | `api/` | PTZ 云台、补光灯 HTTP 控制 |
@@ -25,7 +26,8 @@
 
 | 层 | 文件 | 职责 | 不该做什么 |
 |---|---|---|---|
-| UI 层 | `gui/main_window.py` | 代码布局（无 Qt Designer）；连接所有信号；F11/ESC 全屏；closeEvent 有序释放资源 | 解析协议帧；直接读写串口/UDP |
+| UI 布局层 | `ui/window_ui.py` | 纯 UI 布局（`WindowUI.setup_ui(self)`）；widget 创建、样式表、信号连接；无业务逻辑 | 启动线程；处理业务事件 |
+| 业务逻辑层 | `gui/main_window.py` | 调用 `WindowUI.setup_ui(self)` 构建 UI；管理 RTSP/STM32/UDP/PTZ/补光灯生命周期；F11/ESC 全屏；closeEvent 有序释放资源 | 直接创建 widget；解析协议帧 |
 | 渲染层 | `gui/video_opengl_widget.py` | OpenGL 纹理创建与帧上传；GLSL 双模着色器（Desktop / ES）；VAO/VBO 管理；GPU 资源清理 | 知道 RTSP URL；做任何网络操作 |
 | 流媒体层 | `stream/ffmpeg_player.py` | FFmpeg 子进程启动/终止；从 stdout 读 RGB24 裸帧；封装为 QImage（deep copy）通过信号发送 | 直接操作 UI；知道 OpenGL 细节 |
 | STM32 输入 | `stream/stm32_reader.py` | 串口帧同步与解析；发射 `frame_received(ControlFrame)` 信号 | 知道 UDP 目标；做任何网络操作 |
@@ -92,7 +94,7 @@ STM32 USB CDC (/dev/ttyACM0) 或 UART (/dev/ttyS2)
 1. QSurfaceFormat 设置（3.3 Core Profile / 4x MSAA）
 2. QApplication 创建
 3. MainWindow.__init__()
-   ├── _build_ui()              → VideoOpenGLWidget, 状态指示灯, IP 输入框, 右侧控制面板
+   ├── WindowUI.setup_ui(self)  → VideoOpenGLWidget, 状态指示灯, IP 输入框, 右侧控制面板
    ├── _start_rtsp()            → FFmpegRTSPPlayer.start()
    ├── _start_stm32()           → STM32Reader.start()（串口路径从 config 读）
    ├── _start_udp_sender()      → UDPControlSender.start()
